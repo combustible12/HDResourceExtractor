@@ -14,10 +14,10 @@ permissions:
   contents: read
 
 jobs:
-  probe:
-    name: Online probe (7 images + 1 video)
+  regression:
+    name: Cloud regression (7 images + original video)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -33,21 +33,42 @@ jobs:
           npm install --no-save playwright
           npx playwright install --with-deps chromium
 
-      - name: Probe 7-image and video samples
+      - name: Ensure ffmpeg is available
+        run: |
+          command -v ffprobe >/dev/null || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+          ffprobe -version | head -n 1
+
+      - name: Probe page structure
         run: node tests/xhs-online-probe.mjs
 
-      - name: Publish readable summary
+      - name: Validate exact resources and downloads
+        run: node tests/xhs-cloud-regression.mjs
+
+      - name: Publish readable summaries
         if: always()
         run: |
           if [ -f test-report/summary.md ]; then
             cat test-report/summary.md >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -f regression-report/summary.md ]; then
+            printf '\n\n' >> "$GITHUB_STEP_SUMMARY"
+            cat regression-report/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
 
-      - name: Upload screenshots and raw report
+      - name: Upload probe diagnostics
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: xhs-online-probe-report
           path: test-report/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload regression media and report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: xhs-cloud-regression-report
+          path: regression-report/
           if-no-files-found: warn
           retention-days: 14
