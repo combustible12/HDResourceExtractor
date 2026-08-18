@@ -63,7 +63,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun dp(value: Int): Int =
-        (value * resources.displayMetrics.density).toInt()
+        (value * getResources().displayMetrics.density).toInt()
 
     private fun roundedBackground(color: Int, radiusDp: Int): GradientDrawable =
         GradientDrawable().apply {
