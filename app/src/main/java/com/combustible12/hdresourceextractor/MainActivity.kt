@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
@@ -14,6 +15,7 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
@@ -22,17 +24,19 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ListView
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import coil.load
 import java.net.URLDecoder
 import java.util.Locale
 
@@ -41,8 +45,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var urlInput: EditText
     private lateinit var statusText: TextView
     private lateinit var webView: WebView
-    private lateinit var listView: ListView
-    private lateinit var adapter: ArrayAdapter<String>
+    private lateinit var resultsContainer: LinearLayout
+    private lateinit var resultTitle: TextView
+    private lateinit var saveAllButton: Button
 
     private val resources = linkedSetOf<String>()
     private val visibleResources = mutableListOf<String>()
@@ -69,27 +74,41 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun dp(value: Int): Int =
-        (value * getResources().displayMetrics.density).toInt()
+        (value * resources.displayMetrics.density).toInt()
 
     private fun roundedBackground(
         color: Int,
         radiusDp: Int,
         strokeColor: Int? = null,
         strokeDp: Int = 1
-    ): GradientDrawable =
-        GradientDrawable().apply {
-            setColor(color)
-            cornerRadius = dp(radiusDp).toFloat()
-            strokeColor?.let { setStroke(dp(strokeDp), it) }
-        }
+    ): GradientDrawable = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(radiusDp).toFloat()
+        strokeColor?.let { setStroke(dp(strokeDp), it) }
+    }
 
     private fun buildUi() {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(248, 249, 251))
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(Color.rgb(247, 248, 250))
         }
 
-        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+        webView = WebView(this).apply {
+            setBackgroundColor(Color.WHITE)
+        }
+        root.addView(
+            webView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        val foreground = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.rgb(247, 248, 250))
+        }
+
+        ViewCompat.setOnApplyWindowInsetsListener(foreground) { view, insets ->
             val systemInsets = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or
                     WindowInsetsCompat.Type.displayCutout()
@@ -113,18 +132,16 @@ class MainActivity : AppCompatActivity() {
         val title = TextView(this).apply {
             text = "HDResourceExtractor"
             textSize = 21f
-            setTextColor(Color.rgb(34, 34, 34))
+            setTextColor(Color.rgb(31, 31, 31))
             setTypeface(typeface, Typeface.BOLD)
             includeFontPadding = false
         }
-        root.addView(
+        foreground.addView(
             title,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = dp(12)
-            }
+            ).apply { bottomMargin = dp(12) }
         )
 
         urlInput = EditText(this).apply {
@@ -140,7 +157,7 @@ class MainActivity : AppCompatActivity() {
                 Color.rgb(199, 204, 211)
             )
         }
-        root.addView(
+        foreground.addView(
             urlInput,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -172,150 +189,115 @@ class MainActivity : AppCompatActivity() {
                 leftMargin = dp(5)
             }
         )
-        root.addView(
+        foreground.addView(
             buttonRow,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(44)
-            ).apply {
-                topMargin = dp(10)
-            }
+            ).apply { topMargin = dp(10) }
         )
 
         statusText = TextView(this).apply {
             text = "等待网页链接"
             textSize = 13f
-            setTextColor(Color.rgb(98, 98, 98))
+            setTextColor(Color.rgb(95, 95, 95))
             includeFontPadding = false
         }
-        root.addView(
+        foreground.addView(
             statusText,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 topMargin = dp(9)
-                bottomMargin = dp(8)
+                bottomMargin = dp(10)
             }
         )
 
-        val previewTitle = TextView(this).apply {
-            text = "网页预览"
-            textSize = 14f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(Color.rgb(45, 45, 45))
-            includeFontPadding = false
-        }
-        root.addView(
-            previewTitle,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = dp(6)
-            }
-        )
-
-        webView = WebView(this).apply {
-            setBackgroundColor(Color.WHITE)
-            background = roundedBackground(
-                Color.WHITE,
-                7,
-                Color.rgb(207, 212, 218)
-            )
-        }
-        root.addView(
-            webView,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1.12f
-            )
-        )
-
-        val resourceHeader = LinearLayout(this).apply {
+        val resultHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val resourceTitle = TextView(this).apply {
-            text = "检测到的资源"
-            textSize = 14f
+
+        resultTitle = TextView(this).apply {
+            text = "提取结果"
+            textSize = 16f
             setTypeface(typeface, Typeface.BOLD)
-            setTextColor(Color.rgb(45, 45, 45))
+            setTextColor(Color.rgb(36, 36, 36))
             includeFontPadding = false
         }
-        val resourceHint = TextView(this).apply {
-            text = "点击下载 · 长按复制"
-            textSize = 11f
-            gravity = Gravity.END
-            setTextColor(Color.rgb(130, 130, 130))
-            includeFontPadding = false
+        resultHeader.addView(
+            resultTitle,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+
+        saveAllButton = Button(this).apply {
+            text = "保存全部图片"
+            isAllCaps = false
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            minHeight = 0
+            minimumHeight = 0
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(14), 0, dp(14), 0)
+            background = roundedBackground(Color.rgb(41, 156, 235), 8)
+            visibility = View.GONE
+            setOnClickListener { saveAllResources() }
         }
-        resourceHeader.addView(
-            resourceTitle,
+        resultHeader.addView(
+            saveAllButton,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(38)
+            )
+        )
+
+        foreground.addView(
+            resultHeader,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(8) }
+        )
+
+        val scrollView = ScrollView(this).apply {
+            isFillViewport = true
+            clipToPadding = false
+        }
+
+        resultsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 0, 0, dp(16))
+        }
+        scrollView.addView(
+            resultsContainer,
+            ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
         )
-        resourceHeader.addView(
-            resourceHint,
+
+        foreground.addView(
+            scrollView,
             LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
                 1f
             )
         )
-        root.addView(
-            resourceHeader,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(10)
-                bottomMargin = dp(5)
-            }
-        )
-
-        adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_list_item_1,
-            visibleResources
-        )
-
-        listView = ListView(this).apply {
-            adapter = this@MainActivity.adapter
-            divider = null
-            dividerHeight = 0
-            setBackgroundColor(Color.WHITE)
-            background = roundedBackground(
-                Color.WHITE,
-                7,
-                Color.rgb(207, 212, 218)
-            )
-            setPadding(dp(4), dp(2), dp(4), dp(2))
-            clipToPadding = false
-
-            setOnItemClickListener { _, _, position, _ ->
-                downloadResource(visibleResources[position])
-            }
-            setOnItemLongClickListener { _, _, position, _ ->
-                copyToClipboard(visibleResources[position])
-                true
-            }
-        }
 
         root.addView(
-            listView,
-            LinearLayout.LayoutParams(
+            foreground,
+            FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                0.88f
+                ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
 
         setContentView(root)
-        ViewCompat.requestApplyInsets(root)
+        ViewCompat.requestApplyInsets(foreground)
+        renderResults()
     }
 
     private fun makeMainButton(textValue: String, primary: Boolean): Button =
@@ -339,6 +321,165 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+    private fun renderResults() {
+        if (!::resultsContainer.isInitialized) return
+
+        resultsContainer.removeAllViews()
+        val snapshot = visibleResources.toList()
+
+        resultTitle.text = when {
+            snapshot.isEmpty() -> "提取结果"
+            isXhsSession && !xhsFallbackShown -> "正文图片（${snapshot.size}）"
+            else -> "检测到的资源（${snapshot.size}）"
+        }
+
+        saveAllButton.visibility = if (snapshot.isEmpty()) View.GONE else View.VISIBLE
+        saveAllButton.text = if (isXhsSession && !xhsFallbackShown) {
+            "保存全部图片"
+        } else {
+            "保存全部资源"
+        }
+
+        if (snapshot.isEmpty()) {
+            val empty = TextView(this).apply {
+                text = "解析完成后，图片会在这里直接预览"
+                textSize = 14f
+                gravity = Gravity.CENTER
+                setTextColor(Color.rgb(145, 145, 145))
+                setPadding(dp(12), dp(34), dp(12), dp(34))
+                background = roundedBackground(Color.WHITE, 10)
+            }
+            resultsContainer.addView(
+                empty,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+            return
+        }
+
+        snapshot.chunked(2).forEachIndexed { rowIndex, pair ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.TOP
+            }
+
+            pair.forEachIndexed { columnIndex, url ->
+                val index = rowIndex * 2 + columnIndex
+                row.addView(
+                    createResourceCard(url, index),
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        if (columnIndex == 0) rightMargin = dp(5)
+                        else leftMargin = dp(5)
+                    }
+                )
+            }
+
+            if (pair.size == 1) {
+                val spacer = View(this)
+                row.addView(
+                    spacer,
+                    LinearLayout.LayoutParams(0, dp(1), 1f).apply {
+                        leftMargin = dp(5)
+                    }
+                )
+            }
+
+            resultsContainer.addView(
+                row,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(10) }
+            )
+        }
+    }
+
+    private fun createResourceCard(url: String, index: Int): View {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBackground(Color.WHITE, 10)
+            clipToOutline = true
+        }
+
+        val imageView = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            setBackgroundColor(Color.rgb(235, 237, 240))
+            contentDescription = "资源 ${index + 1}"
+        }
+
+        if (isLikelyVideoUrl(url)) {
+            imageView.setImageDrawable(ColorDrawable(Color.rgb(45, 48, 54)))
+        } else {
+            imageView.load(url) {
+                crossfade(true)
+                placeholder(ColorDrawable(Color.rgb(235, 237, 240)))
+                error(ColorDrawable(Color.rgb(224, 227, 231)))
+            }
+        }
+
+        card.addView(
+            imageView,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(220)
+            )
+        )
+
+        val firstAction = makeCardAction(
+            if (isLikelyVideoUrl(url)) "下载视频" else "下载图片"
+        ) {
+            enqueueDownload(url, index, showToast = true)
+        }
+        card.addView(
+            firstAction,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(46)
+            )
+        )
+
+        val divider = View(this).apply {
+            setBackgroundColor(Color.rgb(238, 238, 238))
+        }
+        card.addView(
+            divider,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(1)
+            )
+        )
+
+        val secondAction = makeCardAction(
+            if (isLikelyVideoUrl(url)) "复制视频链接" else "复制图片链接"
+        ) {
+            copyToClipboard(url)
+        }
+        card.addView(
+            secondAction,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(46)
+            )
+        )
+
+        return card
+    }
+
+    private fun makeCardAction(textValue: String, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            text = textValue
+            textSize = 14f
+            gravity = Gravity.CENTER_VERTICAL
+            setTextColor(Color.rgb(40, 40, 40))
+            setPadding(dp(12), 0, dp(12), 0)
+            includeFontPadding = false
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onClick() }
+        }
+
     @Suppress("SetJavaScriptEnabled")
     private fun configureWebView() {
         webView.settings.apply {
@@ -346,7 +487,7 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
             databaseEnabled = true
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            userAgentString = "$userAgentString HDResourceExtractor/0.4"
+            userAgentString = "$userAgentString HDResourceExtractor/0.5"
             loadWithOverviewMode = true
             useWideViewPort = true
             loadsImagesAutomatically = true
@@ -361,14 +502,11 @@ class MainActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(
                 view: WebView?,
                 request: WebResourceRequest?
-            ): Boolean {
-                return shouldBlockNavigation(request?.url?.toString())
-            }
+            ): Boolean = shouldBlockNavigation(request?.url?.toString())
 
             @Suppress("DEPRECATION")
-            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-                return shouldBlockNavigation(url)
-            }
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean =
+                shouldBlockNavigation(url)
 
             override fun shouldInterceptRequest(
                 view: WebView?,
@@ -416,6 +554,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun shouldBlockNavigation(url: String?): Boolean {
         if (url.isNullOrBlank()) return false
+
         val scheme = try {
             Uri.parse(url).scheme?.lowercase(Locale.US).orEmpty()
         } catch (_: Exception) {
@@ -478,13 +617,14 @@ class MainActivity : AppCompatActivity() {
             xhsCandidateScores.clear()
         }
         visibleResources.clear()
-        adapter.notifyDataSetChanged()
+        renderResults()
 
         statusText.text = if (isXhsSession) {
             "正在打开小红书笔记…"
         } else {
             "正在打开网页…"
         }
+
         webView.stopLoading()
         webView.loadUrl(url)
     }
@@ -501,9 +641,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun readClipboardText(): String {
         return try {
-            val clipboard =
-                getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             if (!clipboard.hasPrimaryClip()) return ""
             val clip = clipboard.primaryClip ?: return ""
             if (clip.itemCount == 0) return ""
@@ -659,8 +797,16 @@ class MainActivity : AppCompatActivity() {
         if (!lower.startsWith("http://") && !lower.startsWith("https://")) return false
         if (!lower.contains("xhscdn.com")) return false
 
-        val host = try { Uri.parse(url).host?.lowercase(Locale.US).orEmpty() } catch (_: Exception) { "" }
-        val path = try { Uri.parse(url).path?.lowercase(Locale.US).orEmpty() } catch (_: Exception) { lower }
+        val host = try {
+            Uri.parse(url).host?.lowercase(Locale.US).orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+        val path = try {
+            Uri.parse(url).path?.lowercase(Locale.US).orEmpty()
+        } catch (_: Exception) {
+            lower
+        }
 
         if (
             host.contains("avatar") ||
@@ -722,7 +868,9 @@ class MainActivity : AppCompatActivity() {
         if (!url.contains('!')) score += 800
         if (lower.contains("original") || lower.contains("origin")) score += 1500
 
-        val sizes = Regex("(?<!\\d)(2160|2048|1920|1440|1280|1200|1080|1040|960|720|640)(?!\\d)")
+        val sizes = Regex(
+            "(?<!\\d)(2160|2048|1920|1440|1280|1200|1080|1040|960|720|640)(?!\\d)"
+        )
             .findAll(lower)
             .mapNotNull { it.value.toIntOrNull() }
             .toList()
@@ -739,7 +887,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 visibleResources.clear()
                 visibleResources.addAll(filtered)
-                adapter.notifyDataSetChanged()
+                renderResults()
                 statusText.text = "已识别 ${filtered.size} 张小红书正文图片"
             }
             return
@@ -759,7 +907,7 @@ class MainActivity : AppCompatActivity() {
         val snapshot = synchronized(resources) { resources.toList() }
         visibleResources.clear()
         visibleResources.addAll(snapshot)
-        adapter.notifyDataSetChanged()
+        renderResults()
         if (snapshot.isNotEmpty()) {
             statusText.text = "专用解析未命中，显示 ${snapshot.size} 个候选资源"
         }
@@ -900,7 +1048,7 @@ class MainActivity : AppCompatActivity() {
         if (!showImmediately) return
         runOnUiThread {
             visibleResources.add(url)
-            adapter.notifyDataSetChanged()
+            renderResults()
             statusText.text = "已找到 ${visibleResources.size} 个候选资源"
         }
     }
@@ -932,33 +1080,65 @@ class MainActivity : AppCompatActivity() {
         ).any { lower.contains(it) }
     }
 
-    private fun downloadResource(url: String) {
-        if (url.startsWith("blob:")) {
-            Toast.makeText(
-                this,
-                "blob: 资源不能直接交给系统下载",
-                Toast.LENGTH_LONG
-            ).show()
-            return
+    private fun isLikelyVideoUrl(url: String): Boolean {
+        val lower = url.lowercase(Locale.US)
+        return listOf(".mp4", ".webm", ".mov", ".m4v", ".m3u8", ".mpd")
+            .any { lower.substringBefore('?').contains(it) } ||
+            lower.contains("video")
+    }
+
+    private fun saveAllResources() {
+        val snapshot = visibleResources.toList()
+        if (snapshot.isEmpty()) return
+
+        var queued = 0
+        snapshot.forEachIndexed { index, url ->
+            if (enqueueDownload(url, index, showToast = false)) queued++
         }
 
-        try {
-            val uri = Uri.parse(url)
-            val guessedName =
-                URLDecoder.decode(uri.lastPathSegment ?: "resource", "UTF-8")
-                    .substringBefore('!')
-                    .takeIf { it.isNotBlank() }
-                    ?: "resource"
+        Toast.makeText(
+            this,
+            "已加入 $queued 个下载任务",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
 
-            val request = DownloadManager.Request(uri)
-                .setTitle(guessedName)
+    private fun enqueueDownload(url: String, index: Int, showToast: Boolean): Boolean {
+        if (url.startsWith("blob:")) {
+            if (showToast) {
+                Toast.makeText(
+                    this,
+                    "blob: 资源不能直接交给系统下载",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            return false
+        }
+
+        return try {
+            val extension = guessExtension(url)
+            val fileName = if (isXhsSession && !xhsFallbackShown) {
+                "xhs_${System.currentTimeMillis()}_${index + 1}.$extension"
+            } else {
+                val uri = Uri.parse(url)
+                val rawName = URLDecoder.decode(uri.lastPathSegment ?: "resource", "UTF-8")
+                    .substringBefore('!')
+                    .substringBefore('?')
+                    .takeIf { it.isNotBlank() }
+                    ?: "resource_${index + 1}"
+                if (rawName.contains('.')) rawName else "$rawName.$extension"
+            }
+
+            val request = DownloadManager.Request(Uri.parse(url))
+                .setTitle(fileName)
                 .setDescription("HDResourceExtractor")
                 .setNotificationVisibility(
                     DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
                 )
                 .setDestinationInExternalPublicDir(
-                    Environment.DIRECTORY_DOWNLOADS,
-                    guessedName
+                    if (isLikelyVideoUrl(url)) Environment.DIRECTORY_MOVIES
+                    else Environment.DIRECTORY_PICTURES,
+                    "HDResourceExtractor/$fileName"
                 )
                 .setAllowedOverMetered(true)
                 .setAllowedOverRoaming(true)
@@ -976,37 +1156,40 @@ class MainActivity : AppCompatActivity() {
                 ?.takeIf { it.isNotBlank() }
                 ?.let { request.addRequestHeader("Cookie", it) }
 
-            val manager =
-                getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             manager.enqueue(request)
 
-            Toast.makeText(
-                this,
-                "已交给系统下载：$guessedName",
-                Toast.LENGTH_SHORT
-            ).show()
+            if (showToast) {
+                Toast.makeText(this, "已加入下载任务", Toast.LENGTH_SHORT).show()
+            }
+            true
         } catch (e: Exception) {
-            Toast.makeText(
-                this,
-                "下载失败：${e.message}",
-                Toast.LENGTH_LONG
-            ).show()
+            if (showToast) {
+                Toast.makeText(
+                    this,
+                    "下载失败：${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            false
+        }
+    }
+
+    private fun guessExtension(url: String): String {
+        val lower = url.lowercase(Locale.US)
+        return when {
+            lower.contains(".png") -> "png"
+            lower.contains(".webp") || lower.contains("1080webp") -> "webp"
+            lower.contains(".gif") -> "gif"
+            lower.contains(".mp4") || lower.contains("video") -> "mp4"
+            else -> "jpg"
         }
     }
 
     private fun copyToClipboard(text: String) {
-        val clipboard =
-            getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-
-        clipboard.setPrimaryClip(
-            ClipData.newPlainText("resource url", text)
-        )
-
-        Toast.makeText(
-            this,
-            "资源链接已复制",
-            Toast.LENGTH_SHORT
-        ).show()
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("resource url", text))
+        Toast.makeText(this, "资源链接已复制", Toast.LENGTH_SHORT).show()
     }
 
     @Deprecated("Deprecated in Java")
