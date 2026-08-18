@@ -329,8 +329,6 @@ tasks.configureEach { task ->
 '''
                     def videoHelpers = '''    private fun collectXhsVideoCandidate(rawUrl: String, source: String) {
         var url = rawUrl
-            .replace("\\u002F", "/", ignoreCase = true)
-            .replace("\\/", "/")
             .replace("&amp;", "&")
             .trim()
 
@@ -444,7 +442,6 @@ tasks.configureEach { task ->
                     text = text.replace(bridgeMarker2, videoBridge + bridgeMarker2)
                 }
 
-                // Let intercepted network traffic contribute video candidates too.
                 text = text.replace(
                     '''        if (isXhsSession) {
             collectXhsCandidate(url, 0, 0, "network")
@@ -457,7 +454,6 @@ tasks.configureEach { task ->
 '''
                 )
 
-                // Clear video candidates for each new note.
                 text = text.replace(
                     '''        synchronized(xhsCandidates) {
             xhsCandidates.clear()
@@ -475,7 +471,6 @@ tasks.configureEach { task ->
 '''
                 )
 
-                // Prefer video source(s) when a video note is detected, while keeping clean images/cover available.
                 if (!text.contains('val videos = synchronized(xhsVideoCandidates)')) {
                     text = text.replace(
                         '''        val filtered = synchronized(xhsCandidates) {
@@ -518,7 +513,6 @@ tasks.configureEach { task ->
                     )
                 }
 
-                // Result header reflects mixed video/image notes.
                 text = text.replace(
                     '''            isXhsSession && !xhsFallbackShown -> "无水印原图（${snapshot.size}）"
 ''',
@@ -553,7 +547,6 @@ tasks.configureEach { task ->
 '''
                 )
 
-                // Direct XHS original media endpoints are more reliable without a spoofed page Referer.
                 text = text.replace(
                     '''            if (currentPageUrl.isNotBlank()) {
                 request.addRequestHeader("Referer", currentPageUrl)
@@ -567,7 +560,6 @@ tasks.configureEach { task ->
 '''
                 )
 
-                // Clear previous caption when a new URL is parsed.
                 text = text.replace(
                     '''        xhsFallbackShown = false
 
