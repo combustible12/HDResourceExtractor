@@ -32,10 +32,14 @@ replacement = r'''    private fun shouldBlockNavigation(raw: String?): Boolean {
                 }
                 "intent" -> {
                     if (isXhsSession) {
-                        harvestXhsDeepLinkPayload(raw)
-                        statusText.text = "已拦截应用跳转，正在解析携带数据…"
-                        handler.postDelayed({ scanXhsStructured() }, 120)
-                        handler.postDelayed({ finalizeXhs() }, 1800)
+                        val noteId = extractXhsNoteId(uri, raw)
+                        if (noteId.isNotBlank()) {
+                            openXhsH5Fallback(noteId, uri)
+                        } else {
+                            statusText.text = "已拦截应用跳转，正在继续读取页面数据…"
+                            handler.postDelayed({ scanXhsStructured() }, 150)
+                            handler.postDelayed({ finalizeXhs() }, 1800)
+                        }
                     }
                     true
                 }
@@ -47,37 +51,44 @@ replacement = r'''    private fun shouldBlockNavigation(raw: String?): Boolean {
     }
 
     private fun handleXhsDeepLink(uri: Uri, raw: String) {
-        harvestXhsDeepLinkPayload(raw)
         val noteId = extractXhsNoteId(uri, raw)
-        if (noteId.isNotBlank() && !xhsDeepLinkFallbackLoaded) {
-            xhsDeepLinkFallbackLoaded = true
-            val builder = Uri.parse("https://www.xiaohongshu.com/explore/$noteId").buildUpon()
-            listOf("xsec_token", "xsec_source").forEach { key ->
-                try {
-                    uri.getQueryParameter(key)?.takeIf { it.isNotBlank() }?.let {
-                        builder.appendQueryParameter(key, it)
-                    }
-                } catch (_: Exception) {}
-            }
-            val h5Url = builder.build().toString()
-            statusText.text = "已捕获小红书笔记，正在打开 H5 数据页…"
-            handler.postDelayed({
-                currentPageUrl = h5Url
-                webView.loadUrl(h5Url)
-            }, 100)
-            handler.postDelayed({ scanXhsStructured() }, 900)
-            handler.postDelayed({ scanXhsStructured() }, 2200)
-            handler.postDelayed({ finalizeXhs() }, 5000)
+        if (noteId.isNotBlank()) {
+            openXhsH5Fallback(noteId, uri)
         } else {
-            statusText.text = if (noteId.isNotBlank()) {
-                "已捕获笔记深链，正在解析携带数据…"
-            } else {
-                "已捕获小红书深链，正在读取携带数据…"
-            }
-            handler.postDelayed({ scanXhsStructured() }, 100)
+            statusText.text = "已捕获小红书深链，但未解析到笔记 ID"
+            handler.postDelayed({ scanXhsStructured() }, 120)
             handler.postDelayed({ scanXhsStructured() }, 800)
             handler.postDelayed({ finalizeXhs() }, 2200)
         }
+    }
+
+    private fun openXhsH5Fallback(noteId: String, sourceUri: Uri) {
+        if (xhsDeepLinkFallbackLoaded) {
+            handler.postDelayed({ scanXhsStructured() }, 120)
+            handler.postDelayed({ finalizeXhs() }, 1800)
+            return
+        }
+        xhsDeepLinkFallbackLoaded = true
+
+        val builder = Uri.parse("https://www.xiaohongshu.com/explore/$noteId").buildUpon()
+        listOf("xsec_token", "xsec_source").forEach { key ->
+            try {
+                sourceUri.getQueryParameter(key)?.takeIf { it.isNotBlank() }?.let { value ->
+                    builder.appendQueryParameter(key, value)
+                }
+            } catch (_: Exception) {}
+        }
+
+        val h5Url = builder.build().toString()
+        statusText.text = "已捕获笔记 ID，正在打开 H5 数据页…"
+        handler.postDelayed({
+            currentPageUrl = h5Url
+            webView.loadUrl(h5Url)
+        }, 100)
+        handler.postDelayed({ scanXhsStructured() }, 900)
+        handler.postDelayed({ scanXhsStructured() }, 2200)
+        handler.postDelayed({ scanXhsStructured() }, 4200)
+        handler.postDelayed({ finalizeXhs() }, 5600)
     }
 
     private fun extractXhsNoteId(uri: Uri, raw: String): String {
@@ -85,6 +96,7 @@ replacement = r'''    private fun shouldBlockNavigation(raw: String?): Boolean {
         try {
             uri.pathSegments.firstOrNull { idRegex.matches(it) }?.let { return it }
         } catch (_: Exception) {}
+
         val names = listOf("noteId", "note_id", "source_note_id", "target_note_id", "id")
         for (name in names) {
             try {
@@ -92,61 +104,8 @@ replacement = r'''    private fun shouldBlockNavigation(raw: String?): Boolean {
                 if (idRegex.matches(value)) return value
             } catch (_: Exception) {}
         }
-        return Regex("(?<![0-9a-fA-F])([0-9a-fA-F]{24})(?![0-9a-fA-F])")
-            .find(raw)?.groupValues?.getOrNull(1).orEmpty()
-    }
 
-    private fun harvestXhsDeepLinkPayload(raw: String) {
-        var decoded = raw
-        repeat(4) {
-            decoded = try { Uri.decode(decoded) } catch (_: Exception) { decoded }
-        }
-        val normalized = decoded
-            .replace("\\u002F", "/", ignoreCase = true)
-            .replace("\\/", "/")
-            .replace("\\\"", "\"")
-
-        val originRegex = Regex("[\\\"']originVideoKey[\\\"']\\s*:\\s*[\\\"']([^\\\"']+)[\\\"']", RegexOption.IGNORE_CASE)
-        originRegex.findAll(normalized).forEach { match ->
-            val key = match.groupValues.getOrNull(1).orEmpty().trim().trimStart('/')
-            if (key.isNotBlank()) {
-                val url = "https://sns-video-bd.xhscdn.com/$key"
-                synchronized(originalVideos) {
-                    originalVideos[url] = VideoCandidate(url, "originVideoKey-deeplink")
-                }
-                xhsVideoNoteDetected = true
-            }
-        }
-
-        val urlRegex = Regex("https?://[^\\s\\\"'<>]+", RegexOption.IGNORE_CASE)
-        urlRegex.findAll(normalized).forEach { match ->
-            val candidate = match.value
-                .trimEnd(')', ']', '}', ',', ';')
-                .replace("&amp;", "&")
-            if (candidate.contains("xhscdn.com", ignoreCase = true) ||
-                candidate.contains("xiaohongshu.com", ignoreCase = true)
-            ) {
-                if (!isLikelyVideoUrl(candidate)) {
-                    collectXhsImage(candidate, 0, 0, "deeplink", isCover = false)
-                }
-            }
-        }
-
-        val title = Regex("[\\\"']title[\\\"']\\s*:\\s*[\\\"']([^\\\"']{1,200})[\\\"']", RegexOption.IGNORE_CASE)
-            .find(normalized)?.groupValues?.getOrNull(1).orEmpty().trim()
-        val desc = Regex("[\\\"']desc[\\\"']\\s*:\\s*[\\\"']([^\\\"']{1,1500})[\\\"']", RegexOption.IGNORE_CASE)
-            .find(normalized)?.groupValues?.getOrNull(1).orEmpty().trim()
-        if (title.isNotBlank() || desc.isNotBlank()) {
-            val combined = listOf(title, desc).filter { it.isNotBlank() }.distinct().joinToString("\n\n")
-            runOnUiThread {
-                xhsCaption = combined
-                captionText.text = combined
-                captionCard.visibility = View.VISIBLE
-                renderResults()
-            }
-        } else {
-            runOnUiThread { renderResults() }
-        }
+        return Regex("[0-9a-fA-F]{24}").find(raw)?.value.orEmpty()
     }
 
     private fun scheduleXhsScans()'''
