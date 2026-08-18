@@ -65,14 +65,26 @@ jobs:
         run: |
           set -euxo pipefail
           EMULATOR="$ANDROID_HOME/emulator/emulator"
+          AVDMANAGER="$(dirname "$(command -v sdkmanager)")/avdmanager"
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/android-avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+
           if [ ! -x "$EMULATOR" ]; then
             echo "Android emulator binary not found at $EMULATOR"
             ls -la "$ANDROID_HOME/emulator" || true
             exit 1
           fi
+          if [ ! -x "$AVDMANAGER" ]; then
+            echo "avdmanager not found at $AVDMANAGER"
+            command -v sdkmanager || true
+            exit 1
+          fi
           "$EMULATOR" -version | head -n 3
 
-          echo no | avdmanager create avd --force --name xhs-test --package 'system-images;android-35;google_apis;x86_64' --device 'pixel_6'
+          printf 'no\n' | "$AVDMANAGER" create avd --force --name xhs-test --package 'system-images;android-35;google_apis;x86_64' --device 'pixel_6'
+          "$AVDMANAGER" list avd
+          test -f "$ANDROID_AVD_HOME/xhs-test.ini"
+
           adb start-server
           nohup "$EMULATOR" -avd xhs-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none > emulator.log 2>&1 &
           EMULATOR_PID=$!
