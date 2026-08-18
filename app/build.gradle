@@ -11,8 +11,8 @@ android {
         applicationId 'com.combustible12.hdresourceextractor'
         minSdk 24
         targetSdk 35
-        versionCode 7
-        versionName '0.7.0'
+        versionCode 8
+        versionName '0.8.0'
     }
 
     buildTypes {
@@ -39,8 +39,7 @@ dependencies {
     implementation 'io.coil-kt:coil:2.7.0'
 }
 
-// Temporary source normalization for the current programmatic UI file.
-// Keeps CI builds deterministic while the UI is still being iterated quickly.
+// Temporary source normalization while the programmatic UI is being iterated.
 tasks.configureEach { task ->
     if (task.name == 'preBuild') {
         task.doFirst {
@@ -314,6 +313,260 @@ tasks.configureEach { task ->
                     text = text.replace(clipboardMarker, clipboardHelper + clipboardMarker)
                 }
 
+                // Xiaohongshu video extraction.
+                if (!text.contains('private val xhsVideoCandidates')) {
+                    text = text.replace(
+                        '    private val xhsCandidateScores = mutableMapOf<String, Int>()\n',
+                        '''    private val xhsCandidateScores = mutableMapOf<String, Int>()
+    private val xhsVideoCandidates = linkedMapOf<String, String>()
+    private val xhsVideoScores = mutableMapOf<String, Int>()
+'''
+                    )
+                }
+
+                if (!text.contains('private fun collectXhsVideoCandidate(')) {
+                    def videoHelperMarker = '''    private fun isLikelyXhsMainImage(
+'''
+                    def videoHelpers = '''    private fun collectXhsVideoCandidate(rawUrl: String, source: String) {
+        var url = rawUrl
+            .replace("\\u002F", "/", ignoreCase = true)
+            .replace("\\/", "/")
+            .replace("&amp;", "&")
+            .trim()
+
+        if (url.startsWith("//")) url = "https:$url"
+        if (!isLikelyXhsVideo(url)) return
+
+        val key = url.substringBefore('#').substringBefore('?')
+        if (key.isBlank()) return
+
+        var score = 0
+        val lower = url.lowercase(Locale.US)
+        if (url.startsWith("https://")) score += 30
+        if (source == "originVideoKey") score += 5000
+        if (source == "masterUrl") score += 4000
+        if (lower.contains(".mp4")) score += 1600
+        if (!lower.contains(".m3u8")) score += 800
+        if (lower.contains("sns-video")) score += 500
+
+        synchronized(xhsVideoCandidates) {
+            val oldScore = xhsVideoScores[key] ?: Int.MIN_VALUE
+            if (score > oldScore) {
+                xhsVideoCandidates[key] = url
+                xhsVideoScores[key] = score
+            }
+        }
+    }
+
+    private fun isLikelyXhsVideo(url: String): Boolean {
+        val lower = url.lowercase(Locale.US)
+        if (!lower.startsWith("http://") && !lower.startsWith("https://")) return false
+        if (!lower.contains("xhscdn.com") && !lower.contains("xiaohongshu.com")) return false
+        return lower.contains("sns-video") ||
+            lower.contains("/video/") ||
+            lower.contains(".mp4") ||
+            lower.contains(".m3u8") ||
+            lower.contains("originvideokey")
+    }
+
+'''
+                    text = text.replace(videoHelperMarker, videoHelpers + videoHelperMarker)
+                }
+
+                if (!text.contains('HDExtractor.addXhsVideo')) {
+                    def doneMarker = '''              try { HDExtractor.doneXhs(seen.size); } catch(e) {}
+'''
+                    def videoScript = '''              try {
+                const videoSeen = new Set();
+                const addVideo = (u, source) => {
+                  if (!u || typeof u !== 'string') return;
+                  u = normalise(u);
+                  if (u.startsWith('//')) u = 'https:' + u;
+                  if (!/^https?:/i.test(u)) return;
+                  if (!/(xhscdn\\.com|xiaohongshu\\.com)/i.test(u)) return;
+                  if (!/(sns-video|\\.mp4(?:[?#]|$)|\\.m3u8(?:[?#]|$)|\\/video\\/)/i.test(u)) return;
+                  if (videoSeen.has(u)) return;
+                  videoSeen.add(u);
+                  try { HDExtractor.addXhsVideo(u, String(source || '')); } catch(e) {}
+                };
+
+                document.querySelectorAll('video, video source, source[type^="video"]').forEach(el => {
+                  addVideo(el.currentSrc, 'dom-video');
+                  addVideo(el.src, 'dom-video');
+                  addVideo(el.getAttribute && el.getAttribute('src'), 'dom-video');
+                });
+
+                try {
+                  performance.getEntriesByType('resource').forEach(e => {
+                    addVideo(String(e.name || ''), 'performance-video');
+                  });
+                } catch(e) {}
+
+                const inspectText = (t) => {
+                  if (!t || typeof t !== 'string') return;
+                  let m;
+                  const keyRe = /["']originVideoKey["']\\s*:\\s*["']([^"']+)["']/gi;
+                  while ((m = keyRe.exec(t)) !== null) {
+                    addVideo('https://sns-video-bd.xhscdn.com/' + m[1], 'originVideoKey');
+                  }
+                  const masterRe = /["']masterUrl["']\\s*:\\s*["']([^"']+)["']/gi;
+                  while ((m = masterRe.exec(t)) !== null) {
+                    addVideo(m[1], 'masterUrl');
+                  }
+                  const urlRe = /https?:\\?\\/\\?\\/[^"'<>\\s]+/gi;
+                  let guard = 0;
+                  while ((m = urlRe.exec(t)) !== null && guard < 800) {
+                    addVideo(m[0], 'script-video');
+                    guard++;
+                  }
+                };
+
+                document.querySelectorAll('script').forEach(s => inspectText(s.textContent || ''));
+                try {
+                  inspectText(document.documentElement ? document.documentElement.innerHTML : '');
+                } catch(e) {}
+              } catch(e) {}
+
+'''
+                    text = text.replace(doneMarker, videoScript + doneMarker)
+                }
+
+                if (!text.contains('fun addXhsVideo(url: String, source: String)')) {
+                    def bridgeMarker2 = '''        @JavascriptInterface
+        fun doneXhs(count: Int) {
+'''
+                    def videoBridge = '''        @JavascriptInterface
+        fun addXhsVideo(url: String, source: String) {
+            collectXhsVideoCandidate(url, source)
+        }
+
+'''
+                    text = text.replace(bridgeMarker2, videoBridge + bridgeMarker2)
+                }
+
+                // Let intercepted network traffic contribute video candidates too.
+                text = text.replace(
+                    '''        if (isXhsSession) {
+            collectXhsCandidate(url, 0, 0, "network")
+        }
+''',
+                    '''        if (isXhsSession) {
+            collectXhsCandidate(url, 0, 0, "network")
+            collectXhsVideoCandidate(url, "network")
+        }
+'''
+                )
+
+                // Clear video candidates for each new note.
+                text = text.replace(
+                    '''        synchronized(xhsCandidates) {
+            xhsCandidates.clear()
+            xhsCandidateScores.clear()
+        }
+''',
+                    '''        synchronized(xhsCandidates) {
+            xhsCandidates.clear()
+            xhsCandidateScores.clear()
+        }
+        synchronized(xhsVideoCandidates) {
+            xhsVideoCandidates.clear()
+            xhsVideoScores.clear()
+        }
+'''
+                )
+
+                // Prefer video source(s) when a video note is detected, while keeping clean images/cover available.
+                if (!text.contains('val videos = synchronized(xhsVideoCandidates)')) {
+                    text = text.replace(
+                        '''        val filtered = synchronized(xhsCandidates) {
+            xhsCandidates.values.toList()
+        }
+
+        if (filtered.isNotEmpty()) {
+            runOnUiThread {
+                visibleResources.clear()
+                visibleResources.addAll(filtered)
+                renderResults()
+                statusText.text = "已识别 ${filtered.size} 张小红书无水印原图"
+            }
+            return
+        }
+''',
+                        '''        val filtered = synchronized(xhsCandidates) {
+            xhsCandidates.values.toList()
+        }
+        val videos = synchronized(xhsVideoCandidates) {
+            xhsVideoCandidates.values.toList()
+        }
+
+        if (videos.isNotEmpty() || filtered.isNotEmpty()) {
+            runOnUiThread {
+                visibleResources.clear()
+                visibleResources.addAll(videos)
+                visibleResources.addAll(filtered)
+                renderResults()
+                statusText.text = when {
+                    videos.isNotEmpty() && filtered.isNotEmpty() ->
+                        "已识别 ${videos.size} 个视频源 · ${filtered.size} 张无水印图片"
+                    videos.isNotEmpty() -> "已识别 ${videos.size} 个小红书视频源"
+                    else -> "已识别 ${filtered.size} 张小红书无水印原图"
+                }
+            }
+            return
+        }
+'''
+                    )
+                }
+
+                // Result header reflects mixed video/image notes.
+                text = text.replace(
+                    '''            isXhsSession && !xhsFallbackShown -> "无水印原图（${snapshot.size}）"
+''',
+                    '''            isXhsSession && !xhsFallbackShown && snapshot.any { isLikelyVideoUrl(it) } -> {
+                val videoCount = snapshot.count { isLikelyVideoUrl(it) }
+                val imageCount = snapshot.size - videoCount
+                if (imageCount > 0) "视频（$videoCount） · 无水印图片（$imageCount）"
+                else "视频（$videoCount）"
+            }
+            isXhsSession && !xhsFallbackShown -> "无水印原图（${snapshot.size}）"
+'''
+                )
+
+                text = text.replace(
+                    '''        saveAllButton.text = if (isXhsSession && !xhsFallbackShown) {
+            "保存全部图片"
+        } else {
+            "保存全部资源"
+        }
+''',
+                    '''        saveAllButton.text = if (isXhsSession && !xhsFallbackShown) {
+            val videoCount = snapshot.count { isLikelyVideoUrl(it) }
+            val imageCount = snapshot.size - videoCount
+            when {
+                videoCount > 0 && imageCount > 0 -> "保存全部资源"
+                videoCount > 0 -> "保存全部视频"
+                else -> "保存全部图片"
+            }
+        } else {
+            "保存全部资源"
+        }
+'''
+                )
+
+                // Direct XHS original media endpoints are more reliable without a spoofed page Referer.
+                text = text.replace(
+                    '''            if (currentPageUrl.isNotBlank()) {
+                request.addRequestHeader("Referer", currentPageUrl)
+            }
+''',
+                    '''            val directXhsMedia = url.contains("ci.xiaohongshu.com", ignoreCase = true) ||
+                url.contains("sns-video", ignoreCase = true)
+            if (currentPageUrl.isNotBlank() && !directXhsMedia) {
+                request.addRequestHeader("Referer", currentPageUrl)
+            }
+'''
+                )
+
                 // Clear previous caption when a new URL is parsed.
                 text = text.replace(
                     '''        xhsFallbackShown = false
@@ -329,8 +582,9 @@ tasks.configureEach { task ->
         synchronized(resources)'''
                 )
 
-                text = text.replace('HDResourceExtractor/0.5', 'HDResourceExtractor/0.7')
-                text = text.replace('HDResourceExtractor/0.6', 'HDResourceExtractor/0.7')
+                text = text.replace('HDResourceExtractor/0.5', 'HDResourceExtractor/0.8')
+                text = text.replace('HDResourceExtractor/0.6', 'HDResourceExtractor/0.8')
+                text = text.replace('HDResourceExtractor/0.7', 'HDResourceExtractor/0.8')
 
                 source.write(text, 'UTF-8')
             }
