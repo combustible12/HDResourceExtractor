@@ -40,6 +40,11 @@ jobs:
       - name: Install Android emulator image
         run: sdkmanager 'platforms;android-35' 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64'
 
+      - name: Install emulator runtime dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpulse0
+
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v6
         with:
