@@ -11,8 +11,8 @@ android {
         applicationId 'com.combustible12.hdresourceextractor'
         minSdk 24
         targetSdk 35
-        versionCode 1
-        versionName '0.1.0'
+        versionCode 6
+        versionName '0.6.0'
     }
 
     buildTypes {
@@ -47,6 +47,7 @@ tasks.configureEach { task ->
             def source = file('src/main/java/com/combustible12/hdresourceextractor/MainActivity.kt')
             if (source.exists()) {
                 def text = source.getText('UTF-8')
+
                 text = text.replace(
                     '(value * resources.displayMetrics.density).toInt()',
                     '(value * getResources().displayMetrics.density).toInt()'
@@ -55,6 +56,75 @@ tasks.configureEach { task ->
                     'ScrollView.LayoutParams(',
                     'FrameLayout.LayoutParams('
                 )
+
+                // The web page often serves a derived xhscdn URL such as
+                // .../<timestamp>/<hash>/<image-id>!h5_1080jpg.
+                // Convert it to Xiaohongshu's full-image endpoint so previews
+                // and downloads use the original clean image instead.
+                if (!text.contains('private fun xhsOriginalImageUrl(')) {
+                    def marker = '    private fun isLikelyXhsMainImage('
+                    def helper = '''    private fun xhsOriginalImageUrl(url: String): String {
+        return try {
+            val uri = Uri.parse(url)
+            val host = uri.host?.lowercase(Locale.US).orEmpty()
+
+            if (host == "ci.xiaohongshu.com") {
+                url.substringBefore('?').substringBefore('#')
+            } else if (host.endsWith("xhscdn.com")) {
+                val segments = uri.pathSegments
+                val timestampIndex = segments.indexOfFirst {
+                    it.matches(Regex("[0-9]{12}"))
+                }
+
+                if (timestampIndex < 0 || timestampIndex + 2 >= segments.size) {
+                    url
+                } else {
+                    val hash = segments[timestampIndex + 1]
+                    if (!hash.matches(Regex("[0-9a-fA-F]{32}"))) {
+                        url
+                    } else {
+                        val payload = segments.drop(timestampIndex + 2).toMutableList()
+                        if (payload.isEmpty()) {
+                            url
+                        } else {
+                            val imageId = payload.last()
+                                .substringBefore('!')
+                                .substringBefore('?')
+                            if (imageId.isBlank()) {
+                                url
+                            } else {
+                                payload[payload.lastIndex] = imageId
+                                "https://ci.xiaohongshu.com/" + payload.joinToString("/")
+                            }
+                        }
+                    }
+                }
+            } else {
+                url
+            }
+        } catch (_: Exception) {
+            url
+        }
+    }
+
+'''
+                    text = text.replace(marker, helper + marker)
+                }
+
+                text = text.replace(
+                    'xhsCandidates[key] = url',
+                    'xhsCandidates[key] = xhsOriginalImageUrl(url)'
+                )
+                text = text.replace(
+                    '"正文图片（${snapshot.size}）"',
+                    '"无水印原图（${snapshot.size}）"'
+                )
+                text = text.replace(
+                    '"已识别 ${filtered.size} 张小红书正文图片"',
+                    '"已识别 ${filtered.size} 张小红书无水印原图"'
+                )
+                text = text.replace('HDResourceExtractor/0.5', 'HDResourceExtractor/0.6')
+
                 source.write(text, 'UTF-8')
             }
         }
