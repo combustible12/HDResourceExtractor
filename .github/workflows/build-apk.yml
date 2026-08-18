@@ -43,11 +43,12 @@ jobs:
           gradle-version: '8.7'
           cache-provider: basic
 
-      - name: Prepare v0.11 debug source
+      - name: Prepare v0.12 debug source
         run: |
           sed -i 's/ScrollView.LayoutParams(/FrameLayout.LayoutParams(/g' app/src/main/java/com/combustible12/hdresourceextractor/MainActivityV11.kt
-          sed -i 's/versionCode 9/versionCode 11/' app/build.gradle
-          sed -i "s/versionName '0.9.0'/versionName '0.11.0'/" app/build.gradle
+          python3 tools/prepare_v12.py
+          sed -i 's/versionCode 9/versionCode 12/' app/build.gradle
+          sed -i "s/versionName '0.9.0'/versionName '0.12.0'/" app/build.gradle
 
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
