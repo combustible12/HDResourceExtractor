@@ -13,8 +13,12 @@
 
         <activity
             android:name=".MainActivityV11"
-            android:exported="true">
+            android:enabled="false"
+            tools:replace="android:enabled" />
 
+        <activity
+            android:name=".MainActivityV13"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -25,7 +29,6 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
-
         </activity>
     </application>
 </manifest>
