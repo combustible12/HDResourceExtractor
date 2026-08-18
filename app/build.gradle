@@ -135,6 +135,8 @@ tasks.configureEach { task ->
                         '    private var xhsFallbackShown: Boolean = false\n',
                         '''    private var xhsFallbackShown: Boolean = false
     private var xhsCaption: String = ""
+    private var lastClipboardUrl: String = ""
+    private var clipboardAutofilledUrl: String = ""
 '''
                     )
                 }
@@ -276,6 +278,40 @@ tasks.configureEach { task ->
 
 '''
                     text = text.replace(bridgeMarker, bridgeMethod + bridgeMarker)
+                }
+
+                // Auto-detect a newly copied URL whenever the app returns to the foreground.
+                if (!text.contains('private fun autoDetectClipboardLink()')) {
+                    def resumeMarker = '''    override fun onNewIntent(intent: Intent) {
+'''
+                    def resumeMethod = '''    override fun onResume() {
+        super.onResume()
+        handler.postDelayed({ autoDetectClipboardLink() }, 180)
+    }
+
+'''
+                    text = text.replace(resumeMarker, resumeMethod + resumeMarker)
+
+                    def clipboardMarker = '''    private fun readClipboardText(): String {
+'''
+                    def clipboardHelper = '''    private fun autoDetectClipboardLink() {
+        if (!::urlInput.isInitialized) return
+
+        val detected = extractFirstUrl(readClipboardText()) ?: return
+        if (detected == lastClipboardUrl) return
+
+        val existing = urlInput.text?.toString()?.trim().orEmpty()
+        val canReplace = existing.isBlank() || existing == clipboardAutofilledUrl
+        if (!canReplace) return
+
+        lastClipboardUrl = detected
+        clipboardAutofilledUrl = detected
+        urlInput.setText(detected)
+        statusText.text = "已检测到剪贴板链接，点“打开并提取”"
+    }
+
+'''
+                    text = text.replace(clipboardMarker, clipboardHelper + clipboardMarker)
                 }
 
                 // Clear previous caption when a new URL is parsed.
