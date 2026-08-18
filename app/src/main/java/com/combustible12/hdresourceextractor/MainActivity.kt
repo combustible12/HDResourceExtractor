@@ -46,10 +46,14 @@ class MainActivity : AppCompatActivity() {
 
     private val resources = linkedSetOf<String>()
     private val visibleResources = mutableListOf<String>()
+    private val xhsCandidates = linkedMapOf<String, String>()
+    private val xhsCandidateScores = mutableMapOf<String, Int>()
     private val handler = Handler(Looper.getMainLooper())
 
     private var pendingSharedText: String = ""
     private var currentPageUrl: String = ""
+    private var isXhsSession: Boolean = false
+    private var xhsFallbackShown: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,7 +69,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun dp(value: Int): Int =
-        (value * getResources().displayMetrics.density).toInt()
+        (value * resources.displayMetrics.density).toInt()
 
     private fun roundedBackground(
         color: Int,
@@ -153,7 +157,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { openAndExtract() }
         }
         val scanButton = makeMainButton("重新扫描", primary = false).apply {
-            setOnClickListener { scanDomResources() }
+            setOnClickListener { scanCurrentPage() }
         }
 
         buttonRow.addView(
@@ -342,7 +346,7 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
             databaseEnabled = true
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            userAgentString = "$userAgentString HDResourceExtractor/0.3"
+            userAgentString = "$userAgentString HDResourceExtractor/0.4"
             loadWithOverviewMode = true
             useWideViewPort = true
             loadsImagesAutomatically = true
@@ -354,11 +358,23 @@ class MainActivity : AppCompatActivity() {
         webView.addJavascriptInterface(ResourceBridge(), "HDExtractor")
 
         webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): Boolean {
+                return shouldBlockNavigation(request?.url?.toString())
+            }
+
+            @Suppress("DEPRECATION")
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                return shouldBlockNavigation(url)
+            }
+
             override fun shouldInterceptRequest(
                 view: WebView?,
                 request: WebResourceRequest?
             ): WebResourceResponse? {
-                request?.url?.toString()?.let { collectResource(it) }
+                request?.url?.toString()?.let { observeResource(it) }
                 return super.shouldInterceptRequest(view, request)
             }
 
@@ -367,29 +383,57 @@ class MainActivity : AppCompatActivity() {
                 view: WebView?,
                 url: String?
             ): WebResourceResponse? {
-                url?.let { collectResource(it) }
+                url?.let { observeResource(it) }
                 return super.shouldInterceptRequest(view, url)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                if (!url.isNullOrBlank()) {
+                if (!url.isNullOrBlank() && url != "about:blank") {
                     currentPageUrl = url
-                    if (urlInput.text.isNullOrBlank()) {
-                        urlInput.setText(url)
-                    }
                 }
 
-                statusText.text = "网页已打开，正在扫描高清资源…"
-                scanDomResources()
-
-                handler.postDelayed({ scanDomResources(silent = true) }, 1500)
-                handler.postDelayed({ scanDomResources(silent = true) }, 4000)
-                handler.postDelayed({ scanDomResources(silent = true) }, 7000)
+                if (isXhsSession) {
+                    statusText.text = "正在识别小红书正文图片…"
+                    scanXhsNoteResources(silent = true)
+                    handler.postDelayed({ scanXhsNoteResources(silent = true) }, 800)
+                    handler.postDelayed({ scanXhsNoteResources(silent = true) }, 2200)
+                    handler.postDelayed({ finalizeXhsResults(allowFallback = false) }, 3000)
+                    handler.postDelayed({ scanXhsNoteResources(silent = true) }, 5000)
+                    handler.postDelayed({ finalizeXhsResults(allowFallback = true) }, 6500)
+                } else {
+                    statusText.text = "网页已打开，正在扫描高清资源…"
+                    scanDomResources()
+                    handler.postDelayed({ scanDomResources(silent = true) }, 1500)
+                    handler.postDelayed({ scanDomResources(silent = true) }, 4000)
+                    handler.postDelayed({ scanDomResources(silent = true) }, 7000)
+                }
             }
         }
 
         webView.loadUrl("about:blank")
+    }
+
+    private fun shouldBlockNavigation(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val scheme = try {
+            Uri.parse(url).scheme?.lowercase(Locale.US).orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+
+        if (scheme == "http" || scheme == "https" || scheme == "about") {
+            return false
+        }
+
+        if (isXhsSession) {
+            runOnUiThread {
+                statusText.text = "已拦截小红书 APP 跳转，继续提取正文图片…"
+                scanXhsNoteResources(silent = true)
+                handler.postDelayed({ finalizeXhsResults(allowFallback = true) }, 700)
+            }
+        }
+        return true
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
@@ -425,13 +469,34 @@ class MainActivity : AppCompatActivity() {
 
         urlInput.setText(url)
         currentPageUrl = url
-        resources.clear()
+        isXhsSession = isXhsUrl(url)
+        xhsFallbackShown = false
+
+        synchronized(resources) { resources.clear() }
+        synchronized(xhsCandidates) {
+            xhsCandidates.clear()
+            xhsCandidateScores.clear()
+        }
         visibleResources.clear()
         adapter.notifyDataSetChanged()
 
-        statusText.text = "正在打开网页…"
+        statusText.text = if (isXhsSession) {
+            "正在打开小红书笔记…"
+        } else {
+            "正在打开网页…"
+        }
         webView.stopLoading()
         webView.loadUrl(url)
+    }
+
+    private fun scanCurrentPage() {
+        if (isXhsSession) {
+            statusText.text = "正在重新识别小红书正文图片…"
+            scanXhsNoteResources(silent = true)
+            handler.postDelayed({ finalizeXhsResults(allowFallback = true) }, 900)
+        } else {
+            scanDomResources()
+        }
     }
 
     private fun readClipboardText(): String {
@@ -440,10 +505,8 @@ class MainActivity : AppCompatActivity() {
                 getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
             if (!clipboard.hasPrimaryClip()) return ""
-
             val clip = clipboard.primaryClip ?: return ""
             if (clip.itemCount == 0) return ""
-
             clip.getItemAt(0).coerceToText(this)?.toString().orEmpty()
         } catch (_: Exception) {
             ""
@@ -462,21 +525,257 @@ class MainActivity : AppCompatActivity() {
             )
     }
 
+    private fun isXhsUrl(url: String): Boolean {
+        val lower = url.lowercase(Locale.US)
+        return lower.contains("xhslink.cn") ||
+            lower.contains("xiaohongshu.com") ||
+            lower.contains("xhscdn.com")
+    }
+
+    private fun observeResource(url: String) {
+        collectGenericResource(url, showImmediately = !isXhsSession)
+        if (isXhsSession) {
+            collectXhsCandidate(url, 0, 0, "network")
+        }
+    }
+
+    private fun scanXhsNoteResources(silent: Boolean = false) {
+        val pageUrl = webView.url
+        if (pageUrl.isNullOrBlank() || pageUrl == "about:blank") {
+            if (!silent) statusText.text = "还没有打开网页"
+            return
+        }
+
+        val script = """
+            (function() {
+              const seen = new Set();
+
+              const normalise = (u) => {
+                if (!u || typeof u !== 'string') return '';
+                return u
+                  .replace(/\\u002F/gi, '/')
+                  .replace(/\\\//g, '/')
+                  .replace(/&amp;/g, '&')
+                  .trim();
+              };
+
+              const add = (u, w, h, source) => {
+                u = normalise(u);
+                if (!u || seen.has(u)) return;
+                if (!/^https?:/i.test(u)) return;
+                if (!/xhscdn\.com/i.test(u)) return;
+                seen.add(u);
+                try {
+                  HDExtractor.addXhs(u, Number(w || 0), Number(h || 0), String(source || ''));
+                } catch(e) {}
+              };
+
+              document.querySelectorAll('img').forEach((el) => {
+                const w = el.naturalWidth || el.width || 0;
+                const h = el.naturalHeight || el.height || 0;
+                add(el.currentSrc, w, h, 'dom');
+                add(el.src, w, h, 'dom');
+                [
+                  'data-src', 'data-original', 'data-origin', 'data-url',
+                  'data-lazy-src', 'data-original-src', 'data-actualsrc'
+                ].forEach(a => add(el.getAttribute(a), w, h, 'dom'));
+
+                const srcset = el.getAttribute('srcset') || el.getAttribute('data-srcset') || '';
+                srcset.split(',').forEach(x => add(x.trim().split(/\s+/)[0], w, h, 'dom'));
+              });
+
+              try {
+                performance.getEntriesByType('resource').forEach(e => {
+                  add(e.name, 0, 0, 'performance');
+                });
+              } catch(e) {}
+
+              try {
+                const html = document.documentElement ? document.documentElement.innerHTML : '';
+                const re = /https?:\\?\/\\?\/[^\"'<>\\s]+?xhscdn\.com[^\"'<>\\s]*/gi;
+                let m;
+                let guard = 0;
+                while ((m = re.exec(html)) !== null && guard < 1200) {
+                  add(m[0], 0, 0, 'html');
+                  guard++;
+                }
+              } catch(e) {}
+
+              try {
+                document.querySelectorAll('script').forEach(s => {
+                  const t = s.textContent || '';
+                  if (!/xhscdn\.com/i.test(t)) return;
+                  const re = /https?:\\?\/\\?\/[^\"'<>\\s]+?xhscdn\.com[^\"'<>\\s]*/gi;
+                  let m;
+                  let guard = 0;
+                  while ((m = re.exec(t)) !== null && guard < 500) {
+                    add(m[0], 0, 0, 'script');
+                    guard++;
+                  }
+                });
+              } catch(e) {}
+
+              try { HDExtractor.doneXhs(seen.size); } catch(e) {}
+            })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(script, null)
+    }
+
+    private fun collectXhsCandidate(
+        rawUrl: String,
+        width: Int,
+        height: Int,
+        source: String
+    ) {
+        val url = rawUrl
+            .replace("\\u002F", "/", ignoreCase = true)
+            .replace("\\/", "/")
+            .replace("&amp;", "&")
+            .trim()
+
+        if (!isLikelyXhsMainImage(url, width, height, source)) return
+
+        val key = canonicalXhsKey(url)
+        if (key.isBlank()) return
+        val score = xhsQualityScore(url, width, height, source)
+
+        synchronized(xhsCandidates) {
+            val oldScore = xhsCandidateScores[key] ?: Int.MIN_VALUE
+            if (score > oldScore) {
+                xhsCandidates[key] = url
+                xhsCandidateScores[key] = score
+            }
+        }
+    }
+
+    private fun isLikelyXhsMainImage(
+        url: String,
+        width: Int,
+        height: Int,
+        source: String
+    ): Boolean {
+        val lower = url.lowercase(Locale.US)
+        if (!lower.startsWith("http://") && !lower.startsWith("https://")) return false
+        if (!lower.contains("xhscdn.com")) return false
+
+        val host = try { Uri.parse(url).host?.lowercase(Locale.US).orEmpty() } catch (_: Exception) { "" }
+        val path = try { Uri.parse(url).path?.lowercase(Locale.US).orEmpty() } catch (_: Exception) { lower }
+
+        if (
+            host.contains("avatar") ||
+            path.contains("avatar") ||
+            path.contains("emoji") ||
+            path.contains("icon") ||
+            path.contains("logo") ||
+            path.contains("qrcode")
+        ) return false
+
+        val mainImageHost = host.contains("sns-webpic") || host.contains("sns-img")
+        if (!mainImageHost) return false
+
+        val looksLikeNoteAsset =
+            path.contains("/1040g") ||
+            path.contains("/notes") ||
+            lower.contains("!h5_") ||
+            lower.contains("1080jpg") ||
+            lower.contains("1080webp")
+
+        val largeDomImage =
+            source == "dom" &&
+            maxOf(width, height) >= 700 &&
+            minOf(width, height) >= 350
+
+        return looksLikeNoteAsset || largeDomImage
+    }
+
+    private fun canonicalXhsKey(url: String): String {
+        val cleaned = url
+            .substringBefore('#')
+            .substringBefore('?')
+            .substringBefore('!')
+
+        return try {
+            val uri = Uri.parse(cleaned)
+            val segment = uri.lastPathSegment.orEmpty()
+            if (segment.length >= 18) segment else cleaned
+        } catch (_: Exception) {
+            cleaned
+        }
+    }
+
+    private fun xhsQualityScore(
+        url: String,
+        width: Int,
+        height: Int,
+        source: String
+    ): Int {
+        val lower = url.lowercase(Locale.US)
+        var score = 0
+        if (lower.startsWith("https://")) score += 30
+        if (source == "dom") score += 200
+        if (width > 0 && height > 0) {
+            score += ((width.toLong() * height.toLong()) / 10000L)
+                .coerceAtMost(5000L)
+                .toInt()
+        }
+        if (!url.contains('!')) score += 800
+        if (lower.contains("original") || lower.contains("origin")) score += 1500
+
+        val sizes = Regex("(?<!\\d)(2160|2048|1920|1440|1280|1200|1080|1040|960|720|640)(?!\\d)")
+            .findAll(lower)
+            .mapNotNull { it.value.toIntOrNull() }
+            .toList()
+        if (sizes.isNotEmpty()) score += sizes.maxOrNull() ?: 0
+        return score
+    }
+
+    private fun finalizeXhsResults(allowFallback: Boolean) {
+        val filtered = synchronized(xhsCandidates) {
+            xhsCandidates.values.toList()
+        }
+
+        if (filtered.isNotEmpty()) {
+            runOnUiThread {
+                visibleResources.clear()
+                visibleResources.addAll(filtered)
+                adapter.notifyDataSetChanged()
+                statusText.text = "已识别 ${filtered.size} 张小红书正文图片"
+            }
+            return
+        }
+
+        if (allowFallback && !xhsFallbackShown) {
+            xhsFallbackShown = true
+            runOnUiThread {
+                statusText.text = "未读取到正文图片，已切换通用资源扫描"
+                showGenericFallbackResults()
+                scanDomResources(silent = true)
+            }
+        }
+    }
+
+    private fun showGenericFallbackResults() {
+        val snapshot = synchronized(resources) { resources.toList() }
+        visibleResources.clear()
+        visibleResources.addAll(snapshot)
+        adapter.notifyDataSetChanged()
+        if (snapshot.isNotEmpty()) {
+            statusText.text = "专用解析未命中，显示 ${snapshot.size} 个候选资源"
+        }
+    }
+
     private fun scanDomResources(silent: Boolean = false) {
         val pageUrl = webView.url
         if (pageUrl.isNullOrBlank() || pageUrl == "about:blank") {
             if (!silent) {
                 statusText.text = "还没有打开网页"
-                Toast.makeText(
-                    this,
-                    "先点“打开并提取”",
-                    Toast.LENGTH_SHORT
-                ).show()
+                Toast.makeText(this, "先点“打开并提取”", Toast.LENGTH_SHORT).show()
             }
             return
         }
 
-        if (!silent) {
+        if (!silent && !isXhsSession) {
             statusText.text = "正在重新扫描…"
         }
 
@@ -504,17 +803,10 @@ class MainActivity : AppCompatActivity() {
               document.querySelectorAll('img').forEach(el => {
                 add(el.currentSrc);
                 add(el.src);
-
                 [
-                  'data-src',
-                  'data-original',
-                  'data-origin',
-                  'data-url',
-                  'data-lazy-src',
-                  'data-original-src',
-                  'data-actualsrc'
+                  'data-src', 'data-original', 'data-origin', 'data-url',
+                  'data-lazy-src', 'data-original-src', 'data-actualsrc'
                 ].forEach(a => add(el.getAttribute(a)));
-
                 addSrcset(el.getAttribute('srcset'));
                 addSrcset(el.getAttribute('data-srcset'));
               });
@@ -533,14 +825,11 @@ class MainActivity : AppCompatActivity() {
                   el.getAttribute('name') ||
                   ''
                 ).toLowerCase();
-
                 if (
                   key.includes('og:image') ||
                   key.includes('og:video') ||
                   key.includes('twitter:image')
-                ) {
-                  add(el.getAttribute('content'));
-                }
+                ) add(el.getAttribute('content'));
               });
 
               document.querySelectorAll('*').forEach(el => {
@@ -556,10 +845,8 @@ class MainActivity : AppCompatActivity() {
                 performance.getEntriesByType('resource').forEach(e => {
                   const t = String(e.initiatorType || '').toLowerCase();
                   const n = String(e.name || '');
-
                   if (
-                    t === 'img' ||
-                    t === 'video' ||
+                    t === 'img' || t === 'video' ||
                     /\.(jpe?g|png|webp|gif|avif|bmp|svg|mp4|webm|mov|m4v|m3u8)([?#]|$)/i.test(n) ||
                     /(image|img|photo|video|media|original|origin|webp|avif)/i.test(n)
                   ) add(n);
@@ -577,29 +864,40 @@ class MainActivity : AppCompatActivity() {
     private inner class ResourceBridge {
         @JavascriptInterface
         fun add(url: String) {
-            collectResource(url)
+            collectGenericResource(url, showImmediately = !isXhsSession || xhsFallbackShown)
         }
 
         @JavascriptInterface
         fun done(count: Int) {
+            if (isXhsSession && !xhsFallbackShown) return
             runOnUiThread {
-                statusText.text =
-                    if (visibleResources.isEmpty()) {
-                        "暂未发现资源，可稍后点“重新扫描”"
-                    } else {
-                        "已找到 ${visibleResources.size} 个候选资源"
-                    }
+                statusText.text = if (visibleResources.isEmpty()) {
+                    "暂未发现资源，可稍后点“重新扫描”"
+                } else {
+                    "已找到 ${visibleResources.size} 个候选资源"
+                }
             }
+        }
+
+        @JavascriptInterface
+        fun addXhs(url: String, width: Int, height: Int, source: String) {
+            collectXhsCandidate(url, width, height, source)
+        }
+
+        @JavascriptInterface
+        fun doneXhs(count: Int) {
+            handler.postDelayed({ finalizeXhsResults(allowFallback = false) }, 120)
         }
     }
 
-    private fun collectResource(url: String) {
+    private fun collectGenericResource(url: String, showImmediately: Boolean) {
         if (!isMediaCandidate(url)) return
 
         synchronized(resources) {
             if (!resources.add(url)) return
         }
 
+        if (!showImmediately) return
         runOnUiThread {
             visibleResources.add(url)
             adapter.notifyDataSetChanged()
@@ -629,17 +927,8 @@ class MainActivity : AppCompatActivity() {
 
         val lower = url.lowercase(Locale.US)
         return listOf(
-            "image",
-            "img",
-            "photo",
-            "video",
-            "media",
-            "poster",
-            "original",
-            "origin",
-            "source",
-            "webp",
-            "avif"
+            "image", "img", "photo", "video", "media", "poster",
+            "original", "origin", "source", "webp", "avif", "xhscdn"
         ).any { lower.contains(it) }
     }
 
@@ -657,6 +946,7 @@ class MainActivity : AppCompatActivity() {
             val uri = Uri.parse(url)
             val guessedName =
                 URLDecoder.decode(uri.lastPathSegment ?: "resource", "UTF-8")
+                    .substringBefore('!')
                     .takeIf { it.isNotBlank() }
                     ?: "resource"
 
@@ -688,7 +978,6 @@ class MainActivity : AppCompatActivity() {
 
             val manager =
                 getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-
             manager.enqueue(request)
 
             Toast.makeText(
