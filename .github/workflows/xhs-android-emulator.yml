@@ -159,6 +159,15 @@ jobs:
           grep -F '封面图（1）' android-report/video-note.xml
           grep -F '笔记文案' android-report/video-note.xml
 
+      - name: Upload tested APK
+        if: success()
+        uses: actions/upload-artifact@v6
+        with:
+          name: HDResourceExtractor-tested-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Write Android WebView summary
         if: always()
         run: |
