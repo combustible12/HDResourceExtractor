@@ -18,7 +18,7 @@ jobs:
         with:
           ref: xhs-online-regression
 
-      - name: Apply confirmed changes
+      - name: Apply confirmed UI and Android regression changes
         shell: bash
         run: |
           set -euo pipefail
@@ -32,144 +32,6 @@ jobs:
               if count != 1:
                   raise SystemExit(f'{label}: expected exactly one match, got {count}')
               p.write_text(text.replace(old, new, 1), encoding='utf-8')
-
-          downloader = 'app/src/main/java/com/combustible12/hdresourceextractor/XhsVideoDownloader.kt'
-          old_download = '''    fun download(
-              candidates: List<String>,
-              userAgent: String,
-              referer: String,
-              cookies: Map<String, String>,
-              callback: (Result) -> Unit
-          ) {
-              Thread {
-                  if (candidates.isEmpty()) {
-                      callback(Result(false, "没有可用的视频源"))
-                      return@Thread
-                  }
-
-                  var lastReason = "视频源不可用"
-                  candidates.forEachIndexed { index, url ->
-                      try {
-                          val fetched = fetchCandidate(
-                              url = url,
-                              userAgent = userAgent,
-                              referer = referer,
-                              cookie = cookies[url].orEmpty(),
-                              candidateIndex = index
-                          )
-                          if (fetched != null) {
-                              val saved = saveToMediaStore(fetched)
-                              if (saved) {
-                                  callback(Result(true, "视频已保存到 Movies/HDResourceExtractor", url))
-                                  return@Thread
-                              }
-                              lastReason = "视频已获取，但写入手机存储失败"
-                          }
-                      } catch (e: Exception) {
-                          lastReason = e.message ?: "视频源请求失败"
-                      }
-                  }
-
-                  callback(Result(false, "视频下载失败：已自动尝试 ${candidates.size} 个源；$lastReason"))
-              }.start()
-          }
-'''
-          new_download = '''    fun download(
-              candidates: List<String>,
-              userAgent: String,
-              referer: String,
-              cookies: Map<String, String>,
-              status: ((String) -> Unit)? = null,
-              callback: (Result) -> Unit
-          ) {
-              Thread {
-                  if (candidates.isEmpty()) {
-                      callback(Result(false, "没有可用的视频源"))
-                      return@Thread
-                  }
-
-                  val maxAttemptsPerSource = 3
-                  var lastReason = "视频源不可用"
-
-                  candidates.forEachIndexed { index, url ->
-                      for (attempt in 1..maxAttemptsPerSource) {
-                          status?.invoke(
-                              if (attempt == 1) "正在下载视频…"
-                              else "正在自动重试 $attempt/$maxAttemptsPerSource…"
-                          )
-
-                          try {
-                              val fetched = fetchCandidate(
-                                  url = url,
-                                  userAgent = userAgent,
-                                  referer = referer,
-                                  cookie = cookies[url].orEmpty(),
-                                  candidateIndex = index
-                              )
-                              if (fetched != null) {
-                                  val saved = saveToMediaStore(fetched)
-                                  if (saved) {
-                                      callback(Result(true, "视频已保存到 Movies/HDResourceExtractor", url))
-                                      return@Thread
-                                  }
-                                  lastReason = "视频已获取，但写入手机存储失败"
-                              } else {
-                                  lastReason = "视频源返回的内容无效"
-                              }
-                          } catch (e: Exception) {
-                              lastReason = friendlyReason(e.message ?: "视频源请求失败")
-                          }
-
-                          if (attempt < maxAttemptsPerSource) {
-                              status?.invoke(
-                                  "$lastReason，正在自动重试 ${attempt + 1}/$maxAttemptsPerSource…"
-                              )
-                              try {
-                                  Thread.sleep(1_000)
-                              } catch (_: InterruptedException) {
-                                  Thread.currentThread().interrupt()
-                                  callback(Result(false, "视频下载已中断"))
-                                  return@Thread
-                              }
-                          }
-                      }
-                  }
-
-                  callback(
-                      Result(
-                          false,
-                          "视频下载失败：已自动重试 $maxAttemptsPerSource 次；$lastReason"
-                      )
-                  )
-              }.start()
-          }
-
-          private fun friendlyReason(raw: String): String {
-              val lower = raw.lowercase()
-              return when {
-                  lower.contains("connection closed") ||
-                      lower.contains("connection reset") ||
-                      lower.contains("unexpected end") ||
-                      lower.contains("broken pipe") -> "连接中断"
-                  lower.contains("timed out") || lower.contains("timeout") -> "连接超时"
-                  else -> raw
-              }
-          }
-'''
-          replace_once(downloader, old_download, new_download, 'video downloader retry block')
-
-          old_finally = '''            } finally {
-                  connection?.disconnect()
-              }
-'''
-          new_finally = '''            } catch (e: Exception) {
-                  tempFile?.delete()
-                  throw e
-              } finally {
-                  connection?.disconnect()
-              }
-'''
-          replace_once(downloader, old_finally, new_finally, 'temporary video cleanup')
 
           activity = 'app/src/main/java/com/combustible12/hdresourceextractor/MainActivityV13.kt'
           old_cards = '''    private fun videoCard(): LinearLayout = LinearLayout(this).apply {
@@ -499,5 +361,5 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           git diff --cached --check
-          git commit -m 'Improve video download retries and mobile actions'
+          git commit -m 'Apply confirmed video UX and download regression'
           git push origin HEAD:xhs-online-regression
