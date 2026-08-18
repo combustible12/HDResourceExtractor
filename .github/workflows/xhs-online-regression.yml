@@ -14,11 +14,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: xhs-online-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   regression:
     name: Cloud regression (7 images + original video)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -39,48 +43,34 @@ jobs:
           command -v ffprobe >/dev/null || (sudo apt-get update && sudo apt-get install -y ffmpeg)
           ffprobe -version | head -n 1
 
-      - name: Probe page structure
-        run: node tests/xhs-online-probe.mjs
-
       - name: Validate exact resources and downloads
         run: node tests/xhs-cloud-regression.mjs
 
       - name: Validate the same parser Android will use
         run: node tests/xhs-shared-parser-regression.mjs
 
+      - name: Probe page structure after a failure
+        if: failure()
+        run: node tests/xhs-online-probe.mjs
+
       - name: Publish readable summaries
         if: always()
         run: |
-          for report in test-report/summary.md regression-report/summary.md shared-parser-report/summary.md; do
+          for report in regression-report/summary.md shared-parser-report/summary.md test-report/summary.md; do
             if [ -f "$report" ]; then
               printf '\n\n' >> "$GITHUB_STEP_SUMMARY"
               cat "$report" >> "$GITHUB_STEP_SUMMARY"
             fi
           done
 
-      - name: Upload probe diagnostics
-        if: always()
+      - name: Upload failure diagnostics
+        if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: xhs-online-probe-report
-          path: test-report/
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Upload regression media and report
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: xhs-cloud-regression-report
-          path: regression-report/
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Upload shared-parser report
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: xhs-shared-parser-report
-          path: shared-parser-report/
+          name: xhs-online-failure-report
+          path: |
+            regression-report/
+            shared-parser-report/
+            test-report/
           if-no-files-found: warn
           retention-days: 14
