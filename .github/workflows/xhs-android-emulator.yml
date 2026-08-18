@@ -14,11 +14,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: xhs-android-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   android-webview:
     name: Android WebView (7 images + original video)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 12
 
     steps:
       - name: Checkout
@@ -31,19 +35,18 @@ jobs:
           java-version: '17'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install Android emulator image
-        run: |
-          sdkmanager 'platforms;android-35' 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64'
-          yes | sdkmanager --licenses >/dev/null || true
+        run: sdkmanager 'platforms;android-35' 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64'
 
       - name: Set up Gradle 8.7
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.7'
+          cache-provider: basic
 
-      - name: Build clean v0.13 debug APK
+      - name: Build current debug APK
         run: gradle :app:assembleDebug --no-daemon --stacktrace
 
       - name: Enable KVM
@@ -56,19 +59,35 @@ jobs:
       - name: Create and boot Android 35 emulator
         run: |
           set -euxo pipefail
+          EMULATOR="$ANDROID_HOME/emulator/emulator"
+          if [ ! -x "$EMULATOR" ]; then
+            echo "Android emulator binary not found at $EMULATOR"
+            ls -la "$ANDROID_HOME/emulator" || true
+            exit 1
+          fi
+          "$EMULATOR" -version | head -n 3
+
           echo no | avdmanager create avd --force --name xhs-test --package 'system-images;android-35;google_apis;x86_64' --device 'pixel_6'
           adb start-server
-          nohup emulator -avd xhs-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none > emulator.log 2>&1 &
+          nohup "$EMULATOR" -avd xhs-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none > emulator.log 2>&1 &
+          EMULATOR_PID=$!
 
-          if ! timeout 120 adb wait-for-device; then
-            echo 'Android emulator was not detected by ADB within 120 seconds.'
+          sleep 5
+          if ! kill -0 "$EMULATOR_PID" 2>/dev/null; then
+            echo 'Android emulator process exited immediately.'
+            cat emulator.log || true
+            exit 1
+          fi
+
+          if ! timeout 90 adb wait-for-device; then
+            echo 'Android emulator was not detected by ADB within 90 seconds.'
             adb devices -l || true
             cat emulator.log || true
             exit 1
           fi
 
-          if ! timeout 240 bash -c 'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 5; done'; then
-            echo 'Android emulator did not finish booting within 240 seconds after ADB detection.'
+          if ! timeout 180 bash -c 'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 3; done'; then
+            echo 'Android emulator did not finish booting within 180 seconds after ADB detection.'
             adb devices -l || true
             adb shell getprop || true
             cat emulator.log || true
@@ -95,15 +114,22 @@ jobs:
           PKG='com.combustible12.hdresourceextractor'
           ACT='com.combustible12.hdresourceextractor/.MainActivityV13'
           URL='https://xhslink.cn/o/AsM8OMpdOLO'
+          adb logcat -c || true
           adb shell am force-stop "$PKG"
           adb shell am start -W -n "$ACT" -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT "$URL"
-          sleep 18
-          adb shell uiautomator dump /sdcard/image-note.xml
-          adb pull /sdcard/image-note.xml android-report/image-note.xml
+
+          for attempt in $(seq 1 10); do
+            sleep 3
+            adb shell uiautomator dump /sdcard/image-note.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/image-note.xml android-report/image-note.xml >/dev/null 2>&1 || true
+            if grep -Fq '无水印原图（7）' android-report/image-note.xml 2>/dev/null && grep -Fq '笔记文案' android-report/image-note.xml 2>/dev/null; then
+              echo "Image note ready after $((attempt * 3)) seconds."
+              break
+            fi
+          done
+
           adb exec-out screencap -p > android-report/image-note.png
           adb logcat -d -v time > android-report/image-note-logcat.txt || true
-          echo '---- UI text (image note) ----'
-          cat android-report/image-note.xml
           grep -F '无水印原图（7）' android-report/image-note.xml
           grep -F '笔记文案' android-report/image-note.xml
 
@@ -116,13 +142,19 @@ jobs:
           adb logcat -c || true
           adb shell am force-stop "$PKG"
           adb shell am start -W -n "$ACT" -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT "$URL"
-          sleep 18
-          adb shell uiautomator dump /sdcard/video-note.xml
-          adb pull /sdcard/video-note.xml android-report/video-note.xml
+
+          for attempt in $(seq 1 10); do
+            sleep 3
+            adb shell uiautomator dump /sdcard/video-note.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/video-note.xml android-report/video-note.xml >/dev/null 2>&1 || true
+            if grep -Fq '无水印视频（1）' android-report/video-note.xml 2>/dev/null && grep -Fq '封面图（1）' android-report/video-note.xml 2>/dev/null && grep -Fq '笔记文案' android-report/video-note.xml 2>/dev/null; then
+              echo "Video note ready after $((attempt * 3)) seconds."
+              break
+            fi
+          done
+
           adb exec-out screencap -p > android-report/video-note.png
           adb logcat -d -v time > android-report/video-note-logcat.txt || true
-          echo '---- UI text (video note) ----'
-          cat android-report/video-note.xml
           grep -F '无水印视频（1）' android-report/video-note.xml
           grep -F '封面图（1）' android-report/video-note.xml
           grep -F '笔记文案' android-report/video-note.xml
@@ -154,4 +186,4 @@ jobs:
             android-report/
             emulator.log
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
