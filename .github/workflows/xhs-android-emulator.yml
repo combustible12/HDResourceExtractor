@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   android-webview:
-    name: Android WebView (7 images + original video)
+    name: Android WebView (7 images + real video download)
     runs-on: ubuntu-latest
     timeout-minutes: 12
 
@@ -150,7 +150,7 @@ jobs:
           grep -F '无水印原图（7）' android-report/image-note.xml
           grep -F '笔记文案' android-report/image-note.xml
 
-      - name: Test video note in real Android WebView
+      - name: Test video note and real MP4 download in Android WebView
         run: |
           set -euxo pipefail
           PKG='com.combustible12.hdresourceextractor'
@@ -164,17 +164,69 @@ jobs:
             sleep 3
             adb shell uiautomator dump /sdcard/video-note.xml >/dev/null 2>&1 || true
             adb pull /sdcard/video-note.xml android-report/video-note.xml >/dev/null 2>&1 || true
-            if grep -Fq '无水印视频（1）' android-report/video-note.xml 2>/dev/null && grep -Fq '封面图（1）' android-report/video-note.xml 2>/dev/null && grep -Fq '笔记文案' android-report/video-note.xml 2>/dev/null; then
+            if grep -Fq '无水印视频（1）' android-report/video-note.xml 2>/dev/null && grep -Fq '封面图（1）' android-report/video-note.xml 2>/dev/null && grep -Fq '笔记文案' android-report/video-note.xml 2>/dev/null && grep -Fq '下载视频' android-report/video-note.xml 2>/dev/null; then
               echo "Video note ready after $((attempt * 3)) seconds."
               break
             fi
           done
 
           adb exec-out screencap -p > android-report/video-note.png
-          adb logcat -d -v time > android-report/video-note-logcat.txt || true
           grep -F '无水印视频（1）' android-report/video-note.xml
           grep -F '封面图（1）' android-report/video-note.xml
           grep -F '笔记文案' android-report/video-note.xml
+          grep -F '下载视频' android-report/video-note.xml
+
+          adb shell rm -rf /sdcard/Movies/HDResourceExtractor || true
+
+          BUTTON_CENTER="$(python3 - <<'PY'
+          import re
+          import xml.etree.ElementTree as ET
+          root = ET.parse('android-report/video-note.xml').getroot()
+          for node in root.iter('node'):
+              if node.attrib.get('text') == '下载视频':
+                  match = re.fullmatch(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', node.attrib.get('bounds', ''))
+                  if not match:
+                      raise SystemExit('下载视频按钮 bounds 无效')
+                  x1, y1, x2, y2 = map(int, match.groups())
+                  print((x1 + x2) // 2, (y1 + y2) // 2)
+                  break
+          else:
+              raise SystemExit('没有找到下载视频按钮')
+          PY
+          )"
+          read -r TAP_X TAP_Y <<< "$BUTTON_CENTER"
+          adb shell input tap "$TAP_X" "$TAP_Y"
+
+          DOWNLOAD_OK=0
+          VIDEO_PATH=''
+          for attempt in $(seq 1 30); do
+            sleep 3
+            adb shell uiautomator dump /sdcard/video-download.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/video-download.xml android-report/video-download.xml >/dev/null 2>&1 || true
+            VIDEO_PATH="$(adb shell 'find /sdcard/Movies/HDResourceExtractor -type f -name "*.mp4" 2>/dev/null | head -n 1' | tr -d '\r')"
+            if grep -Fq '视频已保存到 Movies/HDResourceExtractor' android-report/video-download.xml 2>/dev/null && [ -n "$VIDEO_PATH" ]; then
+              DOWNLOAD_OK=1
+              echo "Video download finished after $((attempt * 3)) seconds: $VIDEO_PATH"
+              break
+            fi
+          done
+
+          adb exec-out screencap -p > android-report/video-download.png
+          adb logcat -d -v time > android-report/video-note-logcat.txt || true
+
+          if [ "$DOWNLOAD_OK" -ne 1 ] || [ -z "$VIDEO_PATH" ]; then
+            echo 'Real MP4 download did not finish successfully.'
+            cat android-report/video-download.xml 2>/dev/null || true
+            adb shell ls -la /sdcard/Movies/HDResourceExtractor 2>/dev/null || true
+            exit 1
+          fi
+
+          VIDEO_SIZE="$(adb shell "stat -c %s '$VIDEO_PATH'" | tr -d '\r' | tail -n 1)"
+          test "$VIDEO_SIZE" -gt 131072
+          {
+            echo "downloaded_video=$VIDEO_PATH"
+            echo "bytes=$VIDEO_SIZE"
+          } | tee android-report/video-download.txt
 
       - name: Upload tested APK
         if: success()
@@ -196,10 +248,10 @@ jobs:
             else
               echo '- ❌ 7 图笔记：未输出预期 7 张'
             fi
-            if grep -Fq '无水印视频（1）' android-report/video-note.xml 2>/dev/null && grep -Fq '封面图（1）' android-report/video-note.xml 2>/dev/null; then
-              echo '- ✅ 视频笔记：Android WebView 输出 1 个无水印原视频 + 1 张封面'
+            if grep -Fq '无水印视频（1）' android-report/video-note.xml 2>/dev/null && grep -Fq '封面图（1）' android-report/video-note.xml 2>/dev/null && grep -Fq 'downloaded_video=' android-report/video-download.txt 2>/dev/null; then
+              echo '- ✅ 视频笔记：识别原视频/封面，并实际下载 MP4 到 Android 媒体目录'
             else
-              echo '- ❌ 视频笔记：Android WebView 未输出完整视频/封面结果'
+              echo '- ❌ 视频笔记：识别或真实 MP4 下载未完整通过'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
