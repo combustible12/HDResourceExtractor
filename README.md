@@ -16,6 +16,6 @@ Android 本地网页高清资源提取器（MVP）。
 
 ## GitHub Actions
 
-推送到 `main` 或手动运行 `Build APK` 工作流后，会生成 Debug APK artifact：`HDResourceExtractor-debug-apk`。
+推送到 `main`、创建指向 `main` 的 Pull Request，或手动运行 `Build APK` 工作流后，会生成 Debug APK artifact：`HDResourceExtractor-debug-apk`。
 
 APK 构建路径：`app/build/outputs/apk/debug/app-debug.apk`
