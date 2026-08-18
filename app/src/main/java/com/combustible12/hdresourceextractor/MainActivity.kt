@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
@@ -23,7 +24,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.ArrayAdapter
 import android.widget.Button
-import android.widget.FrameLayout
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.TextView
@@ -37,6 +38,7 @@ import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
+    private lateinit var urlInput: EditText
     private lateinit var statusText: TextView
     private lateinit var webView: WebView
     private lateinit var listView: ListView
@@ -65,41 +67,34 @@ class MainActivity : AppCompatActivity() {
     private fun dp(value: Int): Int =
         (value * getResources().displayMetrics.density).toInt()
 
-    private fun roundedBackground(color: Int, radiusDp: Int): GradientDrawable =
+    private fun roundedBackground(
+        color: Int,
+        radiusDp: Int,
+        strokeColor: Int? = null,
+        strokeDp: Int = 1
+    ): GradientDrawable =
         GradientDrawable().apply {
             setColor(color)
             cornerRadius = dp(radiusDp).toFloat()
+            strokeColor?.let { setStroke(dp(strokeDp), it) }
         }
 
     private fun buildUi() {
-        val root = FrameLayout(this).apply {
-            setBackgroundColor(Color.WHITE)
-        }
-
-        webView = WebView(this)
-        root.addView(
-            webView,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        )
-
-        val foreground = LinearLayout(this).apply {
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(Color.rgb(248, 249, 251))
         }
 
-        ViewCompat.setOnApplyWindowInsetsListener(foreground) { view, insets ->
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val systemInsets = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or
                     WindowInsetsCompat.Type.displayCutout()
             )
             view.setPadding(
-                dp(8) + systemInsets.left,
-                dp(13) + systemInsets.top,
-                dp(8) + systemInsets.right,
-                systemInsets.bottom
+                dp(14) + systemInsets.left,
+                dp(12) + systemInsets.top,
+                dp(14) + systemInsets.right,
+                dp(10) + systemInsets.bottom
             )
             insets
         }
@@ -111,49 +106,42 @@ class MainActivity : AppCompatActivity() {
         window.statusBarColor = Color.WHITE
         window.navigationBarColor = Color.WHITE
 
-        val headerRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
         val title = TextView(this).apply {
-            text = "粘贴网页"
-            textSize = 20f
-            setTextColor(Color.rgb(92, 92, 92))
+            text = "HDResourceExtractor"
+            textSize = 21f
+            setTextColor(Color.rgb(34, 34, 34))
+            setTypeface(typeface, Typeface.BOLD)
             includeFontPadding = false
         }
-        headerRow.addView(
+        root.addView(
             title,
             LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                dp(27)
-            )
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(12)
+            }
         )
 
-        addHeaderBadge(headerRow, "微", Color.rgb(34, 194, 82), 19)
-        addHeaderBadge(headerRow, "蓝", Color.rgb(73, 132, 213), 19)
-        addHeaderBadge(headerRow, "淘", Color.rgb(255, 101, 33), 19)
-        addHeaderBadge(headerRow, "BOSS", Color.rgb(48, 170, 148), 24)
-
-        foreground.addView(
-            headerRow,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                dp(28)
+        urlInput = EditText(this).apply {
+            hint = "粘贴网页链接"
+            textSize = 15f
+            setTextColor(Color.rgb(35, 35, 35))
+            setHintTextColor(Color.rgb(148, 152, 158))
+            isSingleLine = true
+            setPadding(dp(12), 0, dp(12), 0)
+            background = roundedBackground(
+                Color.WHITE,
+                8,
+                Color.rgb(199, 204, 211)
             )
-        )
-
-        val dividerLine = TextView(this).apply {
-            setBackgroundColor(Color.rgb(88, 88, 88))
         }
-        foreground.addView(
-            dividerLine,
+        root.addView(
+            urlInput,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(1)
-            ).apply {
-                topMargin = dp(7)
-            }
+                dp(46)
+            )
         )
 
         val buttonRow = LinearLayout(this).apply {
@@ -161,59 +149,148 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val openButton = makeMainButton("打开并提取").apply {
+        val openButton = makeMainButton("打开并提取", primary = true).apply {
             setOnClickListener { openAndExtract() }
         }
-        val scanButton = makeMainButton("重新扫描").apply {
+        val scanButton = makeMainButton("重新扫描", primary = false).apply {
             setOnClickListener { scanDomResources() }
         }
 
         buttonRow.addView(
             openButton,
             LinearLayout.LayoutParams(0, dp(44), 1f).apply {
-                rightMargin = dp(4)
+                rightMargin = dp(5)
             }
         )
         buttonRow.addView(
             scanButton,
-            LinearLayout.LayoutParams(0, dp(44), 1f).apply {
-                leftMargin = dp(4)
+            LinearLayout.LayoutParams(0, dp(44), 0.54f).apply {
+                leftMargin = dp(5)
             }
         )
-
-        foreground.addView(
+        root.addView(
             buttonRow,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(44)
             ).apply {
-                topMargin = dp(14)
+                topMargin = dp(10)
             }
         )
 
         statusText = TextView(this).apply {
             text = "等待网页链接"
-            textSize = 14f
-            setTextColor(Color.rgb(104, 104, 104))
+            textSize = 13f
+            setTextColor(Color.rgb(98, 98, 98))
             includeFontPadding = false
         }
-        foreground.addView(
+        root.addView(
             statusText,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 topMargin = dp(9)
+                bottomMargin = dp(8)
             }
         )
 
-        adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, visibleResources)
+        val previewTitle = TextView(this).apply {
+            text = "网页预览"
+            textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(Color.rgb(45, 45, 45))
+            includeFontPadding = false
+        }
+        root.addView(
+            previewTitle,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(6)
+            }
+        )
+
+        webView = WebView(this).apply {
+            setBackgroundColor(Color.WHITE)
+            background = roundedBackground(
+                Color.WHITE,
+                7,
+                Color.rgb(207, 212, 218)
+            )
+        }
+        root.addView(
+            webView,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1.12f
+            )
+        )
+
+        val resourceHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val resourceTitle = TextView(this).apply {
+            text = "检测到的资源"
+            textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(Color.rgb(45, 45, 45))
+            includeFontPadding = false
+        }
+        val resourceHint = TextView(this).apply {
+            text = "点击下载 · 长按复制"
+            textSize = 11f
+            gravity = Gravity.END
+            setTextColor(Color.rgb(130, 130, 130))
+            includeFontPadding = false
+        }
+        resourceHeader.addView(
+            resourceTitle,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+        resourceHeader.addView(
+            resourceHint,
+            LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        )
+        root.addView(
+            resourceHeader,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(10)
+                bottomMargin = dp(5)
+            }
+        )
+
+        adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_list_item_1,
+            visibleResources
+        )
 
         listView = ListView(this).apply {
             adapter = this@MainActivity.adapter
-            this.divider = null
+            divider = null
             dividerHeight = 0
             setBackgroundColor(Color.WHITE)
+            background = roundedBackground(
+                Color.WHITE,
+                7,
+                Color.rgb(207, 212, 218)
+            )
+            setPadding(dp(4), dp(2), dp(4), dp(2))
+            clipToPadding = false
 
             setOnItemClickListener { _, _, position, _ ->
                 downloadResource(visibleResources[position])
@@ -224,57 +301,24 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        foreground.addView(
+        root.addView(
             listView,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
-                1f
-            ).apply {
-                topMargin = dp(4)
-            }
-        )
-
-        root.addView(
-            foreground,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
+                0.88f
             )
         )
 
         setContentView(root)
-        ViewCompat.requestApplyInsets(foreground)
+        ViewCompat.requestApplyInsets(root)
     }
 
-    private fun addHeaderBadge(
-        parent: LinearLayout,
-        text: String,
-        color: Int,
-        widthDp: Int
-    ) {
-        val badge = TextView(this).apply {
-            this.text = text
-            textSize = if (text.length > 1) 7f else 10f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            includeFontPadding = false
-            background = roundedBackground(color, 3)
-        }
-
-        parent.addView(
-            badge,
-            LinearLayout.LayoutParams(dp(widthDp), dp(19)).apply {
-                leftMargin = dp(2)
-            }
-        )
-    }
-
-    private fun makeMainButton(textValue: String): Button =
+    private fun makeMainButton(textValue: String, primary: Boolean): Button =
         Button(this).apply {
             text = textValue
             isAllCaps = false
-            textSize = 17f
+            textSize = 16f
             setTextColor(Color.rgb(28, 28, 28))
             gravity = Gravity.CENTER
             includeFontPadding = false
@@ -283,7 +327,12 @@ class MainActivity : AppCompatActivity() {
             minWidth = 0
             minimumWidth = 0
             setPadding(0, 0, 0, 0)
-            background = roundedBackground(Color.rgb(224, 225, 225), 2)
+            background = roundedBackground(
+                if (primary) Color.rgb(230, 234, 240)
+                else Color.rgb(245, 246, 248),
+                7,
+                Color.rgb(190, 195, 202)
+            )
         }
 
     @Suppress("SetJavaScriptEnabled")
@@ -293,7 +342,7 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
             databaseEnabled = true
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            userAgentString = "$userAgentString HDResourceExtractor/0.2"
+            userAgentString = "$userAgentString HDResourceExtractor/0.3"
             loadWithOverviewMode = true
             useWideViewPort = true
             loadsImagesAutomatically = true
@@ -324,7 +373,12 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                if (!url.isNullOrBlank()) currentPageUrl = url
+                if (!url.isNullOrBlank()) {
+                    currentPageUrl = url
+                    if (urlInput.text.isNullOrBlank()) {
+                        urlInput.setText(url)
+                    }
+                }
 
                 statusText.text = "网页已打开，正在扫描高清资源…"
                 scanDomResources()
@@ -334,33 +388,42 @@ class MainActivity : AppCompatActivity() {
                 handler.postDelayed({ scanDomResources(silent = true) }, 7000)
             }
         }
+
+        webView.loadUrl("about:blank")
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
             val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
-            if (extractFirstUrl(sharedText) != null) {
+            val sharedUrl = extractFirstUrl(sharedText)
+            if (sharedUrl != null) {
                 pendingSharedText = sharedText
+                urlInput.setText(sharedUrl)
                 statusText.text = "已接收网页链接，点“打开并提取”"
             }
         }
     }
 
     private fun openAndExtract() {
-        val source = pendingSharedText.takeIf { extractFirstUrl(it) != null }
-            ?: readClipboardText()
+        val typedText = urlInput.text?.toString().orEmpty()
+        val source = when {
+            extractFirstUrl(typedText) != null -> typedText
+            extractFirstUrl(pendingSharedText) != null -> pendingSharedText
+            else -> readClipboardText()
+        }
 
         val url = extractFirstUrl(source)
         if (url == null) {
             statusText.text = "等待网页链接"
             Toast.makeText(
                 this,
-                "先复制网页链接，或从浏览器 / APP 分享给本应用",
+                "先粘贴网页链接，或从浏览器 / APP 分享给本应用",
                 Toast.LENGTH_LONG
             ).show()
             return
         }
 
+        urlInput.setText(url)
         currentPageUrl = url
         resources.clear()
         visibleResources.clear()
@@ -400,10 +463,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun scanDomResources(silent: Boolean = false) {
-        if (webView.url.isNullOrBlank()) {
+        val pageUrl = webView.url
+        if (pageUrl.isNullOrBlank() || pageUrl == "about:blank") {
             if (!silent) {
                 statusText.text = "还没有打开网页"
-                Toast.makeText(this, "先点“打开并提取”", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    this,
+                    "先点“打开并提取”",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
             return
         }
@@ -428,7 +496,7 @@ class MainActivity : AppCompatActivity() {
               const addSrcset = (value) => {
                 if (!value) return;
                 String(value).split(',').forEach(x => {
-                  const u = x.trim().split(/\\s+/)[0];
+                  const u = x.trim().split(/\s+/)[0];
                   add(u);
                 });
               };
@@ -478,7 +546,7 @@ class MainActivity : AppCompatActivity() {
               document.querySelectorAll('*').forEach(el => {
                 try {
                   const bg = getComputedStyle(el).backgroundImage || '';
-                  const re = /url\\((['"]?)(.*?)\\1\\)/g;
+                  const re = /url\((['"]?)(.*?)\1\)/g;
                   let m;
                   while ((m = re.exec(bg)) !== null) add(m[2]);
                 } catch(e) {}
@@ -492,7 +560,7 @@ class MainActivity : AppCompatActivity() {
                   if (
                     t === 'img' ||
                     t === 'video' ||
-                    /\\.(jpe?g|png|webp|gif|avif|bmp|svg|mp4|webm|mov|m4v|m3u8)([?#]|$)/i.test(n) ||
+                    /\.(jpe?g|png|webp|gif|avif|bmp|svg|mp4|webm|mov|m4v|m3u8)([?#]|$)/i.test(n) ||
                     /(image|img|photo|video|media|original|origin|webp|avif)/i.test(n)
                   ) add(n);
                 });
