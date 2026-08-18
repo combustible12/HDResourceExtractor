@@ -54,7 +54,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildUi() {
-        val contentPadding = (16 * resources.displayMetrics.density).toInt()
+        val contentPadding = (16 * getResources().displayMetrics.density).toInt()
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
