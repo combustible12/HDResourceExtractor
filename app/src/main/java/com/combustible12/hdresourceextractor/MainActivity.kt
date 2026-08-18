@@ -63,7 +63,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun dp(value: Int): Int =
-        (value * getResources().displayMetrics.density).toInt()
+        (value * resources.displayMetrics.density).toInt()
 
     private fun roundedBackground(color: Int, radiusDp: Int): GradientDrawable =
         GradientDrawable().apply {
@@ -143,11 +143,11 @@ class MainActivity : AppCompatActivity() {
             )
         )
 
-        val divider = TextView(this).apply {
+        val dividerLine = TextView(this).apply {
             setBackgroundColor(Color.rgb(88, 88, 88))
         }
         foreground.addView(
-            divider,
+            dividerLine,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(1)
@@ -211,7 +211,7 @@ class MainActivity : AppCompatActivity() {
 
         listView = ListView(this).apply {
             adapter = this@MainActivity.adapter
-            divider = null
+            this.divider = null
             dividerHeight = 0
             setBackgroundColor(Color.WHITE)
 
@@ -428,7 +428,7 @@ class MainActivity : AppCompatActivity() {
               const addSrcset = (value) => {
                 if (!value) return;
                 String(value).split(',').forEach(x => {
-                  const u = x.trim().split(/\s+/)[0];
+                  const u = x.trim().split(/\\s+/)[0];
                   add(u);
                 });
               };
@@ -478,7 +478,7 @@ class MainActivity : AppCompatActivity() {
               document.querySelectorAll('*').forEach(el => {
                 try {
                   const bg = getComputedStyle(el).backgroundImage || '';
-                  const re = /url\((['"]?)(.*?)\1\)/g;
+                  const re = /url\\((['"]?)(.*?)\\1\\)/g;
                   let m;
                   while ((m = re.exec(bg)) !== null) add(m[2]);
                 } catch(e) {}
@@ -492,7 +492,7 @@ class MainActivity : AppCompatActivity() {
                   if (
                     t === 'img' ||
                     t === 'video' ||
-                    /\.(jpe?g|png|webp|gif|avif|bmp|svg|mp4|webm|mov|m4v|m3u8)([?#]|$)/i.test(n) ||
+                    /\\.(jpe?g|png|webp|gif|avif|bmp|svg|mp4|webm|mov|m4v|m3u8)([?#]|$)/i.test(n) ||
                     /(image|img|photo|video|media|original|origin|webp|avif)/i.test(n)
                   ) add(n);
                 });
