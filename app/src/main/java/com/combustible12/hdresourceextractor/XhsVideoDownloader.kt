@@ -112,6 +112,7 @@ class XhsVideoDownloader(private val context: Context) {
 
         val refererModes = if (referer.isBlank()) listOf(false) else listOf(false, true)
         var lastCode = -1
+        var lastException: Exception? = null
 
         for (useReferer in refererModes) {
             var connection: HttpURLConnection? = null
@@ -164,7 +165,7 @@ class XhsVideoDownloader(private val context: Context) {
                 return tempFile
             } catch (e: Exception) {
                 tempFile?.delete()
-                throw e
+                lastException = e
             } finally {
                 connection?.disconnect()
             }
@@ -173,6 +174,7 @@ class XhsVideoDownloader(private val context: Context) {
         if (lastCode >= 400) {
             throw IllegalStateException("服务器返回 HTTP $lastCode")
         }
+        lastException?.let { throw it }
         return null
     }
 
