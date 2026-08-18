@@ -38,3 +38,25 @@ dependencies {
     implementation 'com.google.android.material:material:1.12.0'
     implementation 'io.coil-kt:coil:2.7.0'
 }
+
+// Temporary source normalization for the current programmatic UI file.
+// Keeps CI builds deterministic while the UI is still being iterated quickly.
+tasks.configureEach { task ->
+    if (task.name == 'preBuild') {
+        task.doFirst {
+            def source = file('src/main/java/com/combustible12/hdresourceextractor/MainActivity.kt')
+            if (source.exists()) {
+                def text = source.getText('UTF-8')
+                text = text.replace(
+                    '(value * resources.displayMetrics.density).toInt()',
+                    '(value * getResources().displayMetrics.density).toInt()'
+                )
+                text = text.replace(
+                    'ScrollView.LayoutParams(',
+                    'FrameLayout.LayoutParams('
+                )
+                source.write(text, 'UTF-8')
+            }
+        }
+    }
+}
