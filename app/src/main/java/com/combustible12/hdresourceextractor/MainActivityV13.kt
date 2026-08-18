@@ -32,57 +32,49 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import coil.load
 import org.json.JSONObject
 import java.util.Locale
 
 /**
- * Clean XHS pipeline:
- * 1) Shared structured parser (same xhs_parser.js that GitHub regression tests execute).
- * 2) Network image/video observation always stays enabled as an independent fallback.
- * 3) Image, caption, cover and original-video state are independent.
- * 4) H5 playback URLs are never labelled or downloaded as the original video.
+ * v0.13 clean pipeline.
+ *
+ * Images, caption and original video are deliberately independent:
+ * - the shared JS parser returns structured note data;
+ * - network observation is always kept as an image fallback;
+ * - playback video URLs are observed only for diagnostics and never masquerade as original;
+ * - the only downloadable "original video" is originVideoKey -> sns-video-bd.xhscdn.com.
  */
 class MainActivityV13 : AppCompatActivity() {
 
+    private lateinit var webView: WebView
     private lateinit var urlInput: EditText
     private lateinit var statusText: TextView
-    private lateinit var webView: WebView
-    private lateinit var resultsContainer: LinearLayout
+    private lateinit var captionBox: LinearLayout
+    private lateinit var captionText: TextView
     private lateinit var resultTitle: TextView
     private lateinit var saveAllButton: Button
-    private lateinit var captionCard: LinearLayout
-    private lateinit var captionText: TextView
+    private lateinit var resultList: LinearLayout
 
     private val handler = Handler(Looper.getMainLooper())
 
-    // Structured results. These always outrank fallback candidates.
     private val structuredImages = mutableListOf<String>()
-    private val parserFallbackImages = mutableListOf<String>()
-    private var xhsCaption = ""
-    private var xhsCoverUrl = ""
-    private var xhsOriginVideoUrl = ""
-    private var xhsStructuredType = ""
-    private var structuredReady = false
-
-    // Independent network fallback. Never disabled just because structured parsing fails.
+    private val domFallbackImages = mutableListOf<String>()
     private val networkImages = linkedMapOf<String, String>()
     private val networkImageScores = mutableMapOf<String, Int>()
     private val playbackVideos = linkedSetOf<String>()
 
+    private var caption = ""
+    private var coverUrl = ""
+    private var originVideoUrl = ""
+    private var structuredType = ""
     private var currentPageUrl = ""
-    private var isXhsSession = false
+    private var xhsSession = false
     private var finalized = false
-    private var parserAttempts = 0
-    private var parserLastError = ""
-    private var pendingSharedText = ""
     private var lastClipboardUrl = ""
-    private var clipboardAutofilledUrl = ""
+    private var clipboardAutofillUrl = ""
 
-    private val sharedParserSource: String by lazy {
+    private val parserSource: String by lazy {
         assets.open("xhs_parser.js").bufferedReader(Charsets.UTF_8).use { it.readText() }
     }
 
@@ -90,49 +82,47 @@ class MainActivityV13 : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         buildUi()
         configureWebView()
-        handleIncomingIntent(intent)
+        consumeShare(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleIncomingIntent(intent)
+        consumeShare(intent)
     }
 
     override fun onResume() {
         super.onResume()
-        handler.postDelayed({ autoDetectClipboardLink() }, 180)
+        handler.postDelayed({ detectClipboardLink() }, 180)
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        webView.removeJavascriptInterface("HDNative")
-        webView.destroy()
+        if (::webView.isInitialized) {
+            webView.removeJavascriptInterface("HDNative")
+            webView.destroy()
+        }
         super.onDestroy()
     }
 
     private fun dp(value: Int): Int =
-        (value * getResources().displayMetrics.density).toInt()
+        (value * resources.displayMetrics.density).toInt()
 
-    private fun roundedBackground(
-        color: Int,
-        radiusDp: Int,
-        strokeColor: Int? = null,
-        strokeDp: Int = 1
-    ): GradientDrawable = GradientDrawable().apply {
-        setColor(color)
-        cornerRadius = dp(radiusDp).toFloat()
-        strokeColor?.let { setStroke(dp(strokeDp), it) }
-    }
+    private fun rounded(color: Int, radius: Int, stroke: Int? = null): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radius).toFloat()
+            stroke?.let { setStroke(dp(1), it) }
+        }
 
     private fun buildUi() {
         val root = FrameLayout(this).apply {
             setBackgroundColor(Color.rgb(247, 248, 250))
         }
 
-        // Keep a normal, full-size WebView. The opaque foreground hides it without changing
-        // the viewport Xiaohongshu sees.
-        webView = WebView(this).apply { setBackgroundColor(Color.WHITE) }
+        // Full-size WebView is kept behind an opaque foreground. This preserves the mobile
+        // viewport while removing the webpage preview from the app UI.
+        webView = WebView(this)
         root.addView(
             webView,
             FrameLayout.LayoutParams(
@@ -143,78 +133,50 @@ class MainActivityV13 : AppCompatActivity() {
 
         val foreground = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(18), dp(14), dp(12))
             setBackgroundColor(Color.rgb(247, 248, 250))
         }
 
-        ViewCompat.setOnApplyWindowInsetsListener(foreground) { view, insets ->
-            val bars = insets.getInsets(
-                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
-            )
-            view.setPadding(
-                dp(14) + bars.left,
-                dp(12) + bars.top,
-                dp(14) + bars.right,
-                dp(10) + bars.bottom
-            )
-            insets
-        }
-
-        WindowInsetsControllerCompat(window, window.decorView).apply {
-            isAppearanceLightStatusBars = true
-            isAppearanceLightNavigationBars = true
-        }
-        window.statusBarColor = Color.WHITE
-        window.navigationBarColor = Color.WHITE
-
-        val title = TextView(this).apply {
-            text = "HDResourceExtractor"
-            textSize = 21f
-            setTextColor(Color.rgb(31, 31, 31))
-            setTypeface(typeface, Typeface.BOLD)
-            includeFontPadding = false
-        }
         foreground.addView(
-            title,
+            TextView(this).apply {
+                text = "HDResourceExtractor"
+                textSize = 21f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(Color.rgb(31, 31, 31))
+            },
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(12) }
+            ).apply { bottomMargin = dp(10) }
         )
 
         urlInput = EditText(this).apply {
             hint = "粘贴网页链接"
-            textSize = 15f
-            setTextColor(Color.rgb(35, 35, 35))
-            setHintTextColor(Color.rgb(148, 152, 158))
             isSingleLine = true
+            textSize = 15f
             setPadding(dp(12), 0, dp(12), 0)
-            background = roundedBackground(Color.WHITE, 8, Color.rgb(199, 204, 211))
+            setTextColor(Color.rgb(35, 35, 35))
+            setHintTextColor(Color.rgb(145, 150, 156))
+            background = rounded(Color.WHITE, 8, Color.rgb(199, 204, 211))
         }
         foreground.addView(
             urlInput,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
         )
 
-        val buttonRow = LinearLayout(this).apply {
+        val buttons = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
         }
-        val openButton = makeMainButton("打开并提取", true).apply {
-            setOnClickListener { openAndExtract() }
-        }
-        val scanButton = makeMainButton("重新扫描", false).apply {
-            setOnClickListener { scanCurrentPage() }
-        }
-        buttonRow.addView(
-            openButton,
+        buttons.addView(
+            actionButton("打开并提取", true) { openAndExtract() },
             LinearLayout.LayoutParams(0, dp(44), 1f).apply { rightMargin = dp(5) }
         )
-        buttonRow.addView(
-            scanButton,
-            LinearLayout.LayoutParams(0, dp(44), 0.54f).apply { leftMargin = dp(5) }
+        buttons.addView(
+            actionButton("重新扫描", false) { rescan() },
+            LinearLayout.LayoutParams(0, dp(44), 0.56f).apply { leftMargin = dp(5) }
         )
         foreground.addView(
-            buttonRow,
+            buttons,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply {
                 topMargin = dp(10)
             }
@@ -224,7 +186,6 @@ class MainActivityV13 : AppCompatActivity() {
             text = "等待网页链接"
             textSize = 13f
             setTextColor(Color.rgb(95, 95, 95))
-            includeFontPadding = false
         }
         foreground.addView(
             statusText,
@@ -232,15 +193,15 @@ class MainActivityV13 : AppCompatActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(9)
-                bottomMargin = dp(10)
+                topMargin = dp(8)
+                bottomMargin = dp(8)
             }
         )
 
-        captionCard = LinearLayout(this).apply {
+        captionBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(10), dp(12), dp(10))
-            background = roundedBackground(Color.WHITE, 10)
+            background = rounded(Color.WHITE, 10)
             visibility = View.GONE
         }
         val captionHeader = LinearLayout(this).apply {
@@ -252,44 +213,30 @@ class MainActivityV13 : AppCompatActivity() {
                 text = "笔记文案"
                 textSize = 15f
                 setTypeface(typeface, Typeface.BOLD)
-                setTextColor(Color.rgb(36, 36, 36))
+                setTextColor(Color.rgb(38, 38, 38))
             },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         )
         captionHeader.addView(
-            Button(this).apply {
-                text = "复制文案"
-                isAllCaps = false
-                textSize = 13f
-                setTextColor(Color.rgb(41, 156, 235))
-                minHeight = 0
-                minimumHeight = 0
-                minWidth = 0
-                minimumWidth = 0
-                setPadding(dp(12), 0, dp(12), 0)
-                background = roundedBackground(Color.rgb(239, 248, 255), 8)
-                setOnClickListener {
-                    if (xhsCaption.isNotBlank()) copyToClipboard(xhsCaption, "文案已复制")
-                }
-            },
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
+            miniButton("复制文案") {
+                if (caption.isNotBlank()) copyText(caption, "文案已复制")
+            }
         )
-        captionCard.addView(captionHeader)
+        captionBox.addView(captionHeader)
         captionText = TextView(this).apply {
             textSize = 14f
-            setTextColor(Color.rgb(55, 55, 55))
-            setLineSpacing(0f, 1.18f)
             maxLines = 5
             ellipsize = android.text.TextUtils.TruncateAt.END
+            setTextColor(Color.rgb(55, 55, 55))
             setPadding(0, dp(8), 0, 0)
         }
-        captionCard.addView(captionText)
+        captionBox.addView(captionText)
         foreground.addView(
-            captionCard,
+            captionBox,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(10) }
+            ).apply { bottomMargin = dp(8) }
         )
 
         val resultHeader = LinearLayout(this).apply {
@@ -301,7 +248,6 @@ class MainActivityV13 : AppCompatActivity() {
             textSize = 16f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(Color.rgb(36, 36, 36))
-            includeFontPadding = false
         }
         resultHeader.addView(
             resultTitle,
@@ -316,10 +262,10 @@ class MainActivityV13 : AppCompatActivity() {
             minimumHeight = 0
             minWidth = 0
             minimumWidth = 0
-            setPadding(dp(14), 0, dp(14), 0)
-            background = roundedBackground(Color.rgb(41, 156, 235), 8)
+            setPadding(dp(12), 0, dp(12), 0)
+            background = rounded(Color.rgb(41, 156, 235), 8)
             visibility = View.GONE
-            setOnClickListener { saveAllVisibleResources() }
+            setOnClickListener { saveAll() }
         }
         resultHeader.addView(
             saveAllButton,
@@ -333,14 +279,12 @@ class MainActivityV13 : AppCompatActivity() {
             ).apply { bottomMargin = dp(8) }
         )
 
-        resultsContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
+        resultList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val scroll = ScrollView(this).apply {
             isFillViewport = true
             addView(
-                resultsContainer,
-                ScrollView.LayoutParams(
+                resultList,
+                FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 )
@@ -348,11 +292,11 @@ class MainActivityV13 : AppCompatActivity() {
         }
         foreground.addView(
             scroll,
-            LinearLayout.LayoutParams(0, 0).also {
-                it.width = ViewGroup.LayoutParams.MATCH_PARENT
-                it.height = 0
-                it.weight = 1f
-            }
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
         )
 
         root.addView(
@@ -363,23 +307,39 @@ class MainActivityV13 : AppCompatActivity() {
             )
         )
         setContentView(root)
-        renderResults()
+        render()
     }
 
-    private fun makeMainButton(label: String, primary: Boolean): Button = Button(this).apply {
+    private fun actionButton(label: String, primary: Boolean, action: () -> Unit): Button =
+        Button(this).apply {
+            text = label
+            isAllCaps = false
+            textSize = 15f
+            minHeight = 0
+            minimumHeight = 0
+            minWidth = 0
+            minimumWidth = 0
+            setTextColor(Color.rgb(45, 45, 45))
+            background = rounded(
+                if (primary) Color.rgb(236, 240, 246) else Color.rgb(247, 248, 250),
+                7,
+                Color.rgb(198, 203, 210)
+            )
+            setOnClickListener { action() }
+        }
+
+    private fun miniButton(label: String, action: () -> Unit): Button = Button(this).apply {
         text = label
         isAllCaps = false
-        textSize = 15f
+        textSize = 13f
+        setTextColor(Color.rgb(41, 156, 235))
         minHeight = 0
         minimumHeight = 0
         minWidth = 0
         minimumWidth = 0
-        setTextColor(if (primary) Color.rgb(34, 34, 34) else Color.rgb(55, 55, 55))
-        background = roundedBackground(
-            if (primary) Color.rgb(236, 240, 246) else Color.rgb(247, 248, 250),
-            7,
-            Color.rgb(198, 203, 210)
-        )
+        setPadding(dp(10), 0, dp(10), 0)
+        background = rounded(Color.rgb(239, 248, 255), 7)
+        setOnClickListener { action() }
     }
 
     @Suppress("SetJavaScriptEnabled")
@@ -392,7 +352,6 @@ class MainActivityV13 : AppCompatActivity() {
             loadsImagesAutomatically = true
             loadWithOverviewMode = true
             useWideViewPort = true
-            // Keep Android WebView identity. v0.9 was able to load XHS content with this path.
             userAgentString = "$userAgentString HDResourceExtractor/0.13"
         }
         CookieManager.getInstance().setAcceptCookie(true)
@@ -403,11 +362,11 @@ class MainActivityV13 : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(
                 view: WebView?,
                 request: WebResourceRequest?
-            ): Boolean = shouldBlockNavigation(request?.url?.toString())
+            ): Boolean = blockAppNavigation(request?.url?.toString())
 
             @Suppress("DEPRECATION")
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean =
-                shouldBlockNavigation(url)
+                blockAppNavigation(url)
 
             override fun shouldInterceptRequest(
                 view: WebView?,
@@ -429,26 +388,24 @@ class MainActivityV13 : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 if (!url.isNullOrBlank() && url != "about:blank") currentPageUrl = url
-                if (isXhsSession) scheduleStructuredScans()
+                if (xhsSession) scheduleParser()
             }
         }
     }
 
-    private fun shouldBlockNavigation(raw: String?): Boolean {
+    private fun blockAppNavigation(raw: String?): Boolean {
         if (raw.isNullOrBlank()) return false
         return try {
             when (Uri.parse(raw).scheme?.lowercase(Locale.US).orEmpty()) {
                 "http", "https", "about" -> false
                 "xhsdiscover", "xiaohongshu", "intent" -> {
-                    if (isXhsSession) {
-                        // Do not rewrite the route. Keep the already-loaded HTTP page and continue
-                        // parsing/observing it. This avoids the v0.12 regression.
+                    if (xhsSession) {
                         runOnUiThread {
                             statusText.text = "已拦截 App 跳转，继续读取当前笔记页面…"
                         }
-                        handler.postDelayed({ runSharedParser() }, 120)
-                        handler.postDelayed({ runSharedParser() }, 900)
-                        handler.postDelayed({ finalizeXhs() }, 2400)
+                        handler.postDelayed({ runParser() }, 100)
+                        handler.postDelayed({ runParser() }, 800)
+                        handler.postDelayed({ finalizeResults() }, 2600)
                     }
                     true
                 }
@@ -459,21 +416,20 @@ class MainActivityV13 : AppCompatActivity() {
         }
     }
 
-    private fun scheduleStructuredScans() {
+    private fun scheduleParser() {
         statusText.text = "正在读取小红书笔记数据…"
-        runSharedParser()
-        handler.postDelayed({ runSharedParser() }, 700)
-        handler.postDelayed({ runSharedParser() }, 1800)
-        handler.postDelayed({ runSharedParser() }, 3600)
-        handler.postDelayed({ runSharedParser() }, 5600)
-        handler.postDelayed({ finalizeXhs() }, 6800)
+        runParser()
+        handler.postDelayed({ runParser() }, 700)
+        handler.postDelayed({ runParser() }, 1800)
+        handler.postDelayed({ runParser() }, 3600)
+        handler.postDelayed({ runParser() }, 5600)
+        handler.postDelayed({ finalizeResults() }, 6800)
     }
 
-    private fun runSharedParser() {
-        if (!isXhsSession) return
-        parserAttempts += 1
+    private fun runParser() {
+        if (!xhsSession) return
         val script = buildString {
-            append(sharedParserSource)
+            append(parserSource)
             append("\n;(function(){try{")
             append("var r=window.HDXhsParser.extract();")
             append("HDNative.onParsed(JSON.stringify(r));")
@@ -486,107 +442,96 @@ class MainActivityV13 : AppCompatActivity() {
         @JavascriptInterface
         fun onParsed(json: String) {
             try {
-                val parsed = JSONObject(json)
-                val ok = parsed.optBoolean("ok", false)
-                val type = parsed.optString("type")
-                val caption = parsed.optString("caption").trim()
-
+                val result = JSONObject(json)
+                val ok = result.optBoolean("ok", false)
+                val type = result.optString("type")
+                val newCaption = result.optString("caption").trim()
                 val exactImages = mutableListOf<String>()
-                val images = parsed.optJSONArray("images")
-                if (images != null) {
-                    for (i in 0 until images.length()) {
-                        val obj = images.optJSONObject(i) ?: continue
-                        imageUrlFromParserObject(obj)?.let(exactImages::add)
+
+                result.optJSONArray("images")?.let { array ->
+                    for (i in 0 until array.length()) {
+                        parserImageUrl(array.optJSONObject(i))?.let(exactImages::add)
                     }
                 }
 
-                val cover = parsed.optJSONObject("cover")?.let(::imageUrlFromParserObject).orEmpty()
-                val origin = cleanHttpUrl(parsed.optString("originVideoUrl")).orEmpty()
-
+                val newCover = parserImageUrl(result.optJSONObject("cover")).orEmpty()
+                val newOrigin = cleanHttpUrl(result.optString("originVideoUrl")).orEmpty()
                 val playback = mutableListOf<String>()
-                parsed.optJSONArray("playbackUrls")?.let { array ->
+                result.optJSONArray("playbackUrls")?.let { array ->
                     for (i in 0 until array.length()) {
                         cleanHttpUrl(array.optString(i))?.let(playback::add)
                     }
                 }
 
                 runOnUiThread {
-                    if (caption.isNotBlank()) xhsCaption = caption
+                    if (newCaption.isNotBlank()) caption = newCaption
                     if (ok) {
-                        structuredReady = true
-                        xhsStructuredType = type
-                        if (type == "image") {
+                        structuredType = type
+                        if (type == "image" && exactImages.isNotEmpty()) {
                             structuredImages.clear()
                             structuredImages.addAll(exactImages.distinct())
                         }
                         if (type == "video") {
-                            if (cover.isNotBlank()) xhsCoverUrl = cover
-                            if (origin.isNotBlank()) xhsOriginVideoUrl = origin
+                            if (newCover.isNotBlank()) coverUrl = newCover
+                            if (newOrigin.isNotBlank()) originVideoUrl = newOrigin
                         }
                     } else if (exactImages.isNotEmpty()) {
-                        // DOM fallback returned by the same parser. Keep it separate from exact state.
-                        parserFallbackImages.clear()
-                        parserFallbackImages.addAll(exactImages.distinct())
+                        domFallbackImages.clear()
+                        domFallbackImages.addAll(exactImages.distinct())
                     }
-                    playbackVideos.addAll(playback)
-                    renderResults()
-                    updateStatus(final = false)
+                    synchronized(playbackVideos) { playbackVideos.addAll(playback) }
+                    render()
+                    updateStatus(false)
                 }
             } catch (e: Exception) {
-                onParserError(e.message ?: "解析结果 JSON 无效")
+                onParserError(e.message ?: "解析结果无效")
             }
         }
 
         @JavascriptInterface
         fun onParserError(message: String) {
-            parserLastError = message.take(500)
+            runOnUiThread {
+                if (!finalized) statusText.text = "结构化解析暂未就绪，网络兜底仍在继续…"
+            }
         }
     }
 
-    private fun imageUrlFromParserObject(obj: JSONObject): String? {
+    private fun parserImageUrl(obj: JSONObject?): String? {
+        if (obj == null) return null
         cleanHttpUrl(obj.optString("originalUrl"))?.let { return it }
-        val display = obj.optJSONArray("displayUrls") ?: return null
-        for (i in 0 until display.length()) {
-            cleanHttpUrl(display.optString(i))?.let { return it }
+        obj.optJSONArray("displayUrls")?.let { array ->
+            for (i in 0 until array.length()) {
+                cleanHttpUrl(array.optString(i))?.let { return it }
+            }
         }
         return null
     }
 
     private fun observeNetworkResource(raw: String) {
-        if (!isXhsSession) return
+        if (!xhsSession) return
         val url = cleanHttpUrl(raw) ?: return
-        val lower = url.lowercase(Locale.US)
         val host = try { Uri.parse(url).host?.lowercase(Locale.US).orEmpty() } catch (_: Exception) { "" }
+        if (!host.endsWith("xhscdn.com") && host != "ci.xiaohongshu.com") return
 
-        if (host.endsWith("xhscdn.com") || host == "ci.xiaohongshu.com") {
-            if (isLikelyPlaybackVideo(lower)) {
-                synchronized(playbackVideos) { playbackVideos.add(url) }
-                return
-            }
-            collectNetworkImage(url)
+        val lower = url.lowercase(Locale.US)
+        if (lower.contains("sns-video") || lower.contains(".mp4") ||
+            lower.contains(".m3u8") || lower.contains("/video/")
+        ) {
+            synchronized(playbackVideos) { playbackVideos.add(url) }
+            return
         }
-    }
 
-    private fun isLikelyPlaybackVideo(lowerUrl: String): Boolean =
-        lowerUrl.contains("sns-video") ||
-            lowerUrl.contains(".mp4") ||
-            lowerUrl.contains(".m3u8") ||
-            lowerUrl.contains("/video/")
-
-    private fun collectNetworkImage(raw: String) {
-        val lower = raw.lowercase(Locale.US)
         if (lower.contains("avatar") || lower.contains("emoji") || lower.contains("icon") ||
             lower.contains("logo") || lower.contains("qrcode")
         ) return
 
-        val host = try { Uri.parse(raw).host?.lowercase(Locale.US).orEmpty() } catch (_: Exception) { "" }
-        val likely = host == "ci.xiaohongshu.com" ||
+        val likelyImage = host == "ci.xiaohongshu.com" ||
             host.contains("sns-webpic") || host.contains("sns-img") ||
             lower.contains("!h5_") || lower.contains("/1040g")
-        if (!likely) return
+        if (!likelyImage) return
 
-        val original = xhsOriginalImageUrl(raw)
-        val key = canonicalImageKey(original)
+        val original = originalImageUrl(url)
+        val key = imageKey(original)
         if (key.isBlank()) return
 
         var score = 0
@@ -605,7 +550,7 @@ class MainActivityV13 : AppCompatActivity() {
         }
     }
 
-    private fun xhsOriginalImageUrl(url: String): String {
+    private fun originalImageUrl(url: String): String {
         return try {
             val uri = Uri.parse(url)
             val host = uri.host?.lowercase(Locale.US).orEmpty()
@@ -613,11 +558,11 @@ class MainActivityV13 : AppCompatActivity() {
                 url.substringBefore('?').substringBefore('#')
             } else if (host.endsWith("xhscdn.com")) {
                 val segments = uri.pathSegments
-                val ti = segments.indexOfFirst { it.matches(Regex("[0-9]{12}")) }
-                if (ti >= 0 && ti + 2 < segments.size &&
-                    segments[ti + 1].matches(Regex("[0-9a-fA-F]{32}"))
+                val timeIndex = segments.indexOfFirst { it.matches(Regex("[0-9]{12}")) }
+                if (timeIndex >= 0 && timeIndex + 2 < segments.size &&
+                    segments[timeIndex + 1].matches(Regex("[0-9a-fA-F]{32}"))
                 ) {
-                    val payload = segments.drop(ti + 2).toMutableList()
+                    val payload = segments.drop(timeIndex + 2).toMutableList()
                     if (payload.isNotEmpty()) {
                         payload[payload.lastIndex] = payload.last().substringBefore('!').substringBefore('?')
                         if (payload.last().isNotBlank()) {
@@ -631,7 +576,7 @@ class MainActivityV13 : AppCompatActivity() {
         }
     }
 
-    private fun canonicalImageKey(url: String): String {
+    private fun imageKey(url: String): String {
         val clean = url.substringBefore('#').substringBefore('?').substringBefore('!')
         return try {
             val last = Uri.parse(clean).lastPathSegment.orEmpty()
@@ -641,9 +586,9 @@ class MainActivityV13 : AppCompatActivity() {
         }
     }
 
-    private fun currentImages(): List<String> {
+    private fun visibleImages(): List<String> {
         if (structuredImages.isNotEmpty()) return structuredImages.toList()
-        if (parserFallbackImages.isNotEmpty()) return parserFallbackImages.toList()
+        if (domFallbackImages.isNotEmpty()) return domFallbackImages.toList()
         if (!finalized) return emptyList()
         return synchronized(networkImages) {
             networkImages.entries
@@ -654,49 +599,48 @@ class MainActivityV13 : AppCompatActivity() {
         }
     }
 
-    private fun finalizeXhs() {
-        if (!isXhsSession) return
+    private fun finalizeResults() {
+        if (!xhsSession) return
         finalized = true
         runOnUiThread {
-            renderResults()
-            updateStatus(final = true)
+            render()
+            updateStatus(true)
         }
     }
 
     private fun updateStatus(final: Boolean) {
-        val images = currentImages()
+        val images = visibleImages()
         val playbackCount = synchronized(playbackVideos) { playbackVideos.size }
         statusText.text = when {
-            xhsOriginVideoUrl.isNotBlank() ->
-                "已读取 1 个小红书无水印原视频${if (xhsCoverUrl.isNotBlank()) " · 封面图已保留" else ""}"
-            xhsStructuredType == "video" ->
-                "已识别视频笔记，但暂未读取到无水印原视频${if (playbackCount > 0) " · 已检测到播放流" else ""}"
+            originVideoUrl.isNotBlank() ->
+                "已读取 1 个小红书无水印原视频${if (coverUrl.isNotBlank()) " · 封面图已保留" else ""}"
+            structuredType == "video" ->
+                "已识别视频笔记，但未读取到无水印原视频${if (playbackCount > 0) " · 播放流仅作兜底诊断" else ""}"
             structuredImages.isNotEmpty() ->
                 "已识别 ${structuredImages.size} 张小红书无水印原图"
-            parserFallbackImages.isNotEmpty() ->
-                "结构化数据未就绪，已从正文 DOM 恢复 ${parserFallbackImages.size} 张图片"
+            domFallbackImages.isNotEmpty() ->
+                "结构化数据未就绪，已从正文恢复 ${domFallbackImages.size} 张图片"
             final && images.isNotEmpty() ->
-                "结构化数据未就绪，已从网络资源恢复 ${images.size} 张候选图片"
-            !final -> "正在读取小红书笔记数据…"
-            parserLastError.isNotBlank() -> "暂未读取到笔记结构；网络候选也为空"
-            else -> "暂未读取到笔记资源"
+                "结构化数据未就绪，已从网络恢复 ${images.size} 张候选图片"
+            final -> "暂未读取到笔记资源"
+            else -> "正在读取小红书笔记数据…"
         }
     }
 
-    private fun renderResults() {
-        if (!::resultsContainer.isInitialized) return
-        resultsContainer.removeAllViews()
+    private fun render() {
+        if (!::resultList.isInitialized) return
+        resultList.removeAllViews()
 
-        captionCard.visibility = if (xhsCaption.isBlank()) View.GONE else View.VISIBLE
-        if (xhsCaption.isNotBlank()) captionText.text = xhsCaption
+        captionBox.visibility = if (caption.isBlank()) View.GONE else View.VISIBLE
+        if (caption.isNotBlank()) captionText.text = caption
 
-        val images = currentImages()
-        val hasVideo = xhsOriginVideoUrl.isNotBlank()
-        val hasCover = xhsCoverUrl.isNotBlank()
-        val playbackOnly = !hasVideo && synchronized(playbackVideos) { playbackVideos.isNotEmpty() }
+        val images = visibleImages()
+        val hasVideo = originVideoUrl.isNotBlank()
+        val hasCover = coverUrl.isNotBlank()
 
         resultTitle.text = when {
-            hasVideo -> "无水印视频（1）${if (hasCover) " · 封面图（1）" else ""}"
+            hasVideo && hasCover -> "无水印视频（1） · 封面图（1）"
+            hasVideo -> "无水印视频（1）"
             images.isNotEmpty() -> "无水印原图（${images.size}）"
             hasCover -> "封面图（1）"
             else -> "提取结果"
@@ -710,40 +654,30 @@ class MainActivityV13 : AppCompatActivity() {
             else -> "保存封面"
         }
 
-        if (hasVideo) {
-            resultsContainer.addView(makeVideoCard())
-            if (hasCover) {
-                addSectionLabel("封面图")
-                resultsContainer.addView(makeImageCard(xhsCoverUrl, 0, true))
+        when {
+            hasVideo -> {
+                resultList.addView(videoCard())
+                if (hasCover) {
+                    section("封面图")
+                    resultList.addView(imageCard(coverUrl, 0, true))
+                }
             }
-            return
-        }
-
-        if (images.isNotEmpty()) {
-            addImageGrid(images)
-            return
-        }
-
-        if (playbackOnly && xhsStructuredType == "video") {
-            resultsContainer.addView(
-                makeMessageCard("检测到视频播放流，但没有取得无水印原视频源。播放流不会冒充原视频。")
-            )
-            if (hasCover) {
-                addSectionLabel("封面图")
-                resultsContainer.addView(makeImageCard(xhsCoverUrl, 0, true))
+            images.isNotEmpty() -> addImageGrid(images)
+            structuredType == "video" && synchronized(playbackVideos) { playbackVideos.isNotEmpty() } -> {
+                resultList.addView(messageCard("检测到视频播放流，但没有取得无水印原视频源。播放流不会冒充原视频。"))
+                if (hasCover) {
+                    section("封面图")
+                    resultList.addView(imageCard(coverUrl, 0, true))
+                }
             }
-            return
+            else -> resultList.addView(messageCard(if (finalized) "没有读取到可用资源" else "正在解析…"))
         }
-
-        resultsContainer.addView(
-            makeMessageCard(if (finalized) "没有读取到可用资源" else "正在解析…")
-        )
     }
 
-    private fun addSectionLabel(text: String) {
-        resultsContainer.addView(
+    private fun section(label: String) {
+        resultList.addView(
             TextView(this).apply {
-                this.text = text
+                text = label
                 textSize = 15f
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(Color.rgb(45, 45, 45))
@@ -760,7 +694,7 @@ class MainActivityV13 : AppCompatActivity() {
                 val itemIndex = index + column
                 if (itemIndex < images.size) {
                     row.addView(
-                        makeImageCard(images[itemIndex], itemIndex, false),
+                        imageCard(images[itemIndex], itemIndex, false),
                         LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                             if (column == 0) rightMargin = dp(5) else leftMargin = dp(5)
                         }
@@ -769,7 +703,7 @@ class MainActivityV13 : AppCompatActivity() {
                     row.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
                 }
             }
-            resultsContainer.addView(
+            resultList.addView(
                 row,
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -780,137 +714,116 @@ class MainActivityV13 : AppCompatActivity() {
         }
     }
 
-    private fun makeVideoCard(): LinearLayout {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = roundedBackground(Color.WHITE, 10)
-            setPadding(0, 0, 0, dp(4))
-
-            val preview = ImageView(this@MainActivityV13).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                setBackgroundColor(Color.rgb(25, 25, 25))
-                if (xhsCoverUrl.isNotBlank()) load(xhsCoverUrl) { crossfade(true) }
-            }
-            addView(
-                preview,
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(220))
-            )
-            addView(
-                TextView(this@MainActivityV13).apply {
-                    text = "无水印原视频"
-                    textSize = 14f
-                    setTypeface(typeface, Typeface.BOLD)
-                    setTextColor(Color.rgb(40, 40, 40))
-                    setPadding(dp(12), dp(10), dp(12), dp(4))
-                }
-            )
-            addView(makeResourceButton("下载视频") { downloadOriginalVideo() })
-            addView(makeResourceButton("复制视频链接") {
-                copyToClipboard(xhsOriginVideoUrl, "视频链接已复制")
-            })
+    private fun videoCard(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = rounded(Color.WHITE, 10)
+        val preview = ImageView(this@MainActivityV13).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            setBackgroundColor(Color.rgb(28, 28, 28))
+            if (coverUrl.isNotBlank()) load(coverUrl) { crossfade(true) }
         }
+        addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(220)))
+        addView(resourceButton("下载无水印视频") { downloadOriginalVideo() })
+        addView(resourceButton("复制视频链接") { copyText(originVideoUrl, "视频链接已复制") })
     }
 
-    private fun makeImageCard(url: String, index: Int, isCover: Boolean): LinearLayout {
-        return LinearLayout(this).apply {
+    private fun imageCard(url: String, index: Int, isCover: Boolean): LinearLayout =
+        LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = roundedBackground(Color.WHITE, 10)
-            val image = ImageView(this@MainActivityV13).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                setBackgroundColor(Color.rgb(235, 237, 240))
-                load(url) { crossfade(true) }
-            }
+            background = rounded(Color.WHITE, 10)
             addView(
-                image,
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(if (isCover) 220 else 190))
+                ImageView(this@MainActivityV13).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    setBackgroundColor(Color.rgb(235, 237, 240))
+                    load(url) { crossfade(true) }
+                },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dp(if (isCover) 220 else 190)
+                )
             )
-            addView(makeResourceButton(if (isCover) "下载封面图" else "下载图片") {
-                if (enqueueImageDownload(url, index, isCover)) {
+            addView(resourceButton(if (isCover) "下载封面图" else "下载图片") {
+                if (enqueueImage(url, index, isCover)) {
                     Toast.makeText(this@MainActivityV13, "已加入下载队列", Toast.LENGTH_SHORT).show()
                 }
             })
-            addView(makeResourceButton(if (isCover) "复制封面链接" else "复制图片链接") {
-                copyToClipboard(url, "链接已复制")
+            addView(resourceButton(if (isCover) "复制封面链接" else "复制图片链接") {
+                copyText(url, "链接已复制")
             })
         }
-    }
 
-    private fun makeResourceButton(label: String, action: () -> Unit): Button = Button(this).apply {
+    private fun resourceButton(label: String, action: () -> Unit): Button = Button(this).apply {
         text = label
         isAllCaps = false
         textSize = 13f
         gravity = Gravity.START or Gravity.CENTER_VERTICAL
-        setTextColor(Color.rgb(55, 55, 55))
         minHeight = 0
         minimumHeight = 0
         minWidth = 0
         minimumWidth = 0
+        setTextColor(Color.rgb(55, 55, 55))
         setPadding(dp(12), 0, dp(12), 0)
-        background = roundedBackground(Color.WHITE, 0, Color.rgb(235, 237, 240))
+        background = rounded(Color.WHITE, 0, Color.rgb(235, 237, 240))
         setOnClickListener { action() }
     }
 
-    private fun makeMessageCard(message: String): TextView = TextView(this).apply {
+    private fun messageCard(message: String): TextView = TextView(this).apply {
         text = message
         gravity = Gravity.CENTER
         textSize = 14f
-        setTextColor(Color.rgb(150, 150, 150))
-        background = roundedBackground(Color.WHITE, 10)
-        setPadding(dp(20), dp(34), dp(20), dp(34))
+        setTextColor(Color.rgb(145, 145, 145))
+        setPadding(dp(20), dp(32), dp(20), dp(32))
+        background = rounded(Color.WHITE, 10)
     }
 
     private fun openAndExtract() {
-        val raw = urlInput.text?.toString()?.trim().orEmpty()
-        val url = extractFirstUrl(raw)
+        val url = firstUrl(urlInput.text?.toString().orEmpty())
         if (url == null) {
             Toast.makeText(this, "没有找到有效链接", Toast.LENGTH_SHORT).show()
             return
         }
-        resetExtractionState()
+        resetState()
         currentPageUrl = url
-        isXhsSession = isXhsUrl(url)
+        xhsSession = isXhs(url)
         urlInput.setText(url)
-        statusText.text = if (isXhsSession) "正在打开小红书笔记…" else "正在打开网页…"
+        statusText.text = if (xhsSession) "正在打开小红书笔记…" else "正在打开网页…"
         webView.loadUrl(url)
     }
 
-    private fun scanCurrentPage() {
+    private fun rescan() {
         if (currentPageUrl.isBlank()) {
             openAndExtract()
             return
         }
         finalized = false
         statusText.text = "重新读取当前页面…"
-        if (isXhsSession) {
-            runSharedParser()
-            handler.postDelayed({ runSharedParser() }, 800)
-            handler.postDelayed({ finalizeXhs() }, 2600)
+        if (xhsSession) {
+            runParser()
+            handler.postDelayed({ runParser() }, 800)
+            handler.postDelayed({ finalizeResults() }, 2600)
         }
     }
 
-    private fun resetExtractionState() {
+    private fun resetState() {
         handler.removeCallbacksAndMessages(null)
         structuredImages.clear()
-        parserFallbackImages.clear()
+        domFallbackImages.clear()
         synchronized(networkImages) {
             networkImages.clear()
             networkImageScores.clear()
         }
         synchronized(playbackVideos) { playbackVideos.clear() }
-        xhsCaption = ""
-        xhsCoverUrl = ""
-        xhsOriginVideoUrl = ""
-        xhsStructuredType = ""
-        structuredReady = false
+        caption = ""
+        coverUrl = ""
+        originVideoUrl = ""
+        structuredType = ""
         finalized = false
-        parserAttempts = 0
-        parserLastError = ""
-        captionCard.visibility = View.GONE
-        renderResults()
+        if (::captionBox.isInitialized) captionBox.visibility = View.GONE
+        render()
     }
 
     private fun downloadOriginalVideo() {
-        val url = xhsOriginVideoUrl
+        val url = originVideoUrl
         if (url.isBlank()) {
             Toast.makeText(this, "没有无水印原视频源", Toast.LENGTH_SHORT).show()
             return
@@ -934,17 +847,17 @@ class MainActivityV13 : AppCompatActivity() {
         }
     }
 
-    private fun saveAllVisibleResources() {
+    private fun saveAll() {
         var queued = 0
-        if (xhsOriginVideoUrl.isNotBlank()) {
+        if (originVideoUrl.isNotBlank()) {
             downloadOriginalVideo()
             queued += 1
         }
-        if (xhsCoverUrl.isNotBlank()) {
-            if (enqueueImageDownload(xhsCoverUrl, 0, true)) queued += 1
+        if (coverUrl.isNotBlank()) {
+            if (enqueueImage(coverUrl, 0, true)) queued += 1
         } else {
-            currentImages().forEachIndexed { index, url ->
-                if (enqueueImageDownload(url, index, false)) queued += 1
+            visibleImages().forEachIndexed { index, url ->
+                if (enqueueImage(url, index, false)) queued += 1
             }
         }
         if (queued > 0) {
@@ -952,20 +865,20 @@ class MainActivityV13 : AppCompatActivity() {
         }
     }
 
-    private fun enqueueImageDownload(url: String, index: Int, isCover: Boolean): Boolean {
+    private fun enqueueImage(url: String, index: Int, isCover: Boolean): Boolean {
         return try {
-            val fileName = if (isCover) {
+            val name = if (isCover) {
                 "xhs_cover_${System.currentTimeMillis()}.jpg"
             } else {
                 "xhs_image_${index + 1}_${System.currentTimeMillis()}.jpg"
             }
             val request = DownloadManager.Request(Uri.parse(url))
-                .setTitle(fileName)
+                .setTitle(name)
                 .setDescription("HDResourceExtractor")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setDestinationInExternalPublicDir(
                     Environment.DIRECTORY_PICTURES,
-                    "HDResourceExtractor/$fileName"
+                    "HDResourceExtractor/$name"
                 )
                 .setAllowedOverMetered(true)
                 .setAllowedOverRoaming(true)
@@ -973,7 +886,9 @@ class MainActivityV13 : AppCompatActivity() {
             webView.settings.userAgentString?.takeIf { it.isNotBlank() }?.let {
                 request.addRequestHeader("User-Agent", it)
             }
-            if (currentPageUrl.isNotBlank()) request.addRequestHeader("Referer", currentPageUrl)
+            currentPageUrl.takeIf { it.isNotBlank() }?.let {
+                request.addRequestHeader("Referer", it)
+            }
             CookieManager.getInstance().getCookie(url)?.takeIf { it.isNotBlank() }?.let {
                 request.addRequestHeader("Cookie", it)
             }
@@ -984,46 +899,38 @@ class MainActivityV13 : AppCompatActivity() {
         }
     }
 
-    private fun handleIncomingIntent(intent: Intent?) {
+    private fun consumeShare(intent: Intent?) {
         if (intent?.action != Intent.ACTION_SEND || intent.type != "text/plain") return
-        val shared = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
-        pendingSharedText = shared
-        val url = extractFirstUrl(shared)
-        if (url != null) {
-            urlInput.setText(url)
-            handler.postDelayed({ openAndExtract() }, 120)
-        }
+        val url = firstUrl(intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()) ?: return
+        urlInput.setText(url)
+        handler.postDelayed({ openAndExtract() }, 120)
     }
 
-    private fun autoDetectClipboardLink() {
+    private fun detectClipboardLink() {
         if (!::urlInput.isInitialized) return
-        val detected = extractFirstUrl(readClipboardText()) ?: return
-        if (detected == lastClipboardUrl) return
-        val existing = urlInput.text?.toString()?.trim().orEmpty()
-        if (existing.isNotBlank() && existing != clipboardAutofilledUrl) return
-        lastClipboardUrl = detected
-        clipboardAutofilledUrl = detected
-        urlInput.setText(detected)
-        statusText.text = "已检测到剪贴板链接，点“打开并提取”"
-    }
-
-    private fun readClipboardText(): String {
-        return try {
+        val clipboard = try {
             val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             manager.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty()
         } catch (_: Exception) {
             ""
         }
+        val url = firstUrl(clipboard) ?: return
+        if (url == lastClipboardUrl) return
+        val existing = urlInput.text?.toString()?.trim().orEmpty()
+        if (existing.isNotBlank() && existing != clipboardAutofillUrl) return
+        lastClipboardUrl = url
+        clipboardAutofillUrl = url
+        urlInput.setText(url)
+        statusText.text = "已检测到剪贴板链接，点“打开并提取”"
     }
 
-    private fun extractFirstUrl(text: String): String? {
-        return Regex("https?://[^\\s]+", RegexOption.IGNORE_CASE)
+    private fun firstUrl(text: String): String? =
+        Regex("https?://[^\\s]+", RegexOption.IGNORE_CASE)
             .find(text)
             ?.value
             ?.trimEnd('。', '，', ',', '.', ')', '）', ']', '】', '}', '；', ';')
-    }
 
-    private fun isXhsUrl(url: String): Boolean {
+    private fun isXhs(url: String): Boolean {
         val lower = url.lowercase(Locale.US)
         return lower.contains("xhslink.cn") || lower.contains("xiaohongshu.com")
     }
@@ -1039,7 +946,7 @@ class MainActivityV13 : AppCompatActivity() {
         return value.takeIf { it.startsWith("https://") }
     }
 
-    private fun copyToClipboard(text: String, toast: String) {
+    private fun copyText(text: String, toast: String) {
         if (text.isBlank()) return
         val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         manager.setPrimaryClip(ClipData.newPlainText("HDResourceExtractor", text))
