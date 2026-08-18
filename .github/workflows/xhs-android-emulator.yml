@@ -1,0 +1,141 @@
+name: XHS Android WebView Regression
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'app/src/main/assets/xhs_parser.js'
+      - 'app/src/main/java/com/combustible12/hdresourceextractor/**'
+      - 'app/src/debug/AndroidManifest.xml'
+      - 'app/build.gradle'
+      - '.github/workflows/xhs-android-emulator.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  android-webview:
+    name: Android WebView (7 images + original video)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android emulator image
+        run: |
+          sdkmanager 'platforms;android-35' 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64'
+          yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build clean v0.13 debug APK
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          sudo chmod 666 /dev/kvm || true
+
+      - name: Create and boot Android 35 emulator
+        run: |
+          echo no | avdmanager create avd --force --name xhs-test --package 'system-images;android-35;google_apis;x86_64' --device 'pixel_6'
+          nohup emulator -avd xhs-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none > emulator.log 2>&1 &
+          adb wait-for-device
+          timeout 360 bash -c 'until [ "$(adb shell getprop sys.boot_completed | tr -d "\r")" = "1" ]; do sleep 5; done'
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          adb shell input keyevent 82 || true
+          adb shell wm size 1080x2400
+          adb shell wm density 420
+          adb shell dumpsys webviewupdate || true
+
+      - name: Install APK
+        run: |
+          adb install -r app/build/outputs/apk/debug/app-debug.apk
+          mkdir -p android-report
+          adb shell pm list packages | grep com.combustible12.hdresourceextractor
+
+      - name: Test 7-image note in real Android WebView
+        run: |
+          set -euxo pipefail
+          PKG='com.combustible12.hdresourceextractor'
+          ACT='com.combustible12.hdresourceextractor/.MainActivityV13'
+          URL='https://xhslink.cn/o/AsM8OMpdOLO'
+          adb shell am force-stop "$PKG"
+          adb shell am start -W -n "$ACT" -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT "$URL"
+          sleep 18
+          adb shell uiautomator dump /sdcard/image-note.xml
+          adb pull /sdcard/image-note.xml android-report/image-note.xml
+          adb exec-out screencap -p > android-report/image-note.png
+          adb logcat -d -v time > android-report/image-note-logcat.txt || true
+          echo '---- UI text (image note) ----'
+          cat android-report/image-note.xml
+          grep -F '无水印原图（7）' android-report/image-note.xml
+          grep -F '笔记文案' android-report/image-note.xml
+
+      - name: Test video note in real Android WebView
+        run: |
+          set -euxo pipefail
+          PKG='com.combustible12.hdresourceextractor'
+          ACT='com.combustible12.hdresourceextractor/.MainActivityV13'
+          URL='https://xhslink.cn/o/91iT26p7qax'
+          adb logcat -c || true
+          adb shell am force-stop "$PKG"
+          adb shell am start -W -n "$ACT" -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT "$URL"
+          sleep 18
+          adb shell uiautomator dump /sdcard/video-note.xml
+          adb pull /sdcard/video-note.xml android-report/video-note.xml
+          adb exec-out screencap -p > android-report/video-note.png
+          adb logcat -d -v time > android-report/video-note-logcat.txt || true
+          echo '---- UI text (video note) ----'
+          cat android-report/video-note.xml
+          grep -F '无水印视频（1）' android-report/video-note.xml
+          grep -F '封面图（1）' android-report/video-note.xml
+          grep -F '笔记文案' android-report/video-note.xml
+
+      - name: Write Android WebView summary
+        if: always()
+        run: |
+          {
+            echo '# Android WebView 真机环境回归'
+            echo
+            if grep -Fq '无水印原图（7）' android-report/image-note.xml 2>/dev/null; then
+              echo '- ✅ 7 图笔记：Android WebView 输出 7 张正文原图'
+            else
+              echo '- ❌ 7 图笔记：未输出预期 7 张'
+            fi
+            if grep -Fq '无水印视频（1）' android-report/video-note.xml 2>/dev/null && grep -Fq '封面图（1）' android-report/video-note.xml 2>/dev/null; then
+              echo '- ✅ 视频笔记：Android WebView 输出 1 个无水印原视频 + 1 张封面'
+            else
+              echo '- ❌ 视频笔记：Android WebView 未输出完整视频/封面结果'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Android screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: xhs-android-webview-report
+          path: |
+            android-report/
+            emulator.log
+          if-no-files-found: warn
+          retention-days: 14
