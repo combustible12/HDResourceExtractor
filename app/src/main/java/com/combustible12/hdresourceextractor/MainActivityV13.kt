@@ -723,8 +723,27 @@ class MainActivityV13 : AppCompatActivity() {
             if (coverUrl.isNotBlank()) load(coverUrl) { crossfade(true) }
         }
         addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(220)))
-        addView(resourceButton("下载无水印视频") { downloadOriginalVideo() })
-        addView(resourceButton("复制视频链接") { copyText(originVideoUrl, "视频链接已复制") })
+
+        val actions = LinearLayout(this@MainActivityV13).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        actions.addView(
+            resourceButton("下载视频", true) { downloadOriginalVideo() },
+            LinearLayout.LayoutParams(0, dp(54), 1f).apply { rightMargin = dp(5) }
+        )
+        actions.addView(
+            resourceButton("复制链接", false) { copyText(originVideoUrl, "视频链接已复制") },
+            LinearLayout.LayoutParams(0, dp(54), 1f).apply { leftMargin = dp(5) }
+        )
+        addView(
+            actions,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)).apply {
+                leftMargin = dp(8)
+                rightMargin = dp(8)
+                topMargin = dp(8)
+                bottomMargin = dp(8)
+            }
+        )
     }
 
     private fun imageCard(url: String, index: Int, isCover: Boolean): LinearLayout =
@@ -742,30 +761,76 @@ class MainActivityV13 : AppCompatActivity() {
                     dp(if (isCover) 220 else 190)
                 )
             )
-            addView(resourceButton(if (isCover) "下载封面图" else "下载图片") {
-                if (enqueueImage(url, index, isCover)) {
-                    Toast.makeText(this@MainActivityV13, "已加入下载队列", Toast.LENGTH_SHORT).show()
+
+            if (isCover) {
+                val actions = LinearLayout(this@MainActivityV13).apply {
+                    orientation = LinearLayout.HORIZONTAL
                 }
-            })
-            addView(resourceButton(if (isCover) "复制封面链接" else "复制图片链接") {
-                copyText(url, "链接已复制")
-            })
+                actions.addView(
+                    resourceButton("保存封面", true) {
+                        if (enqueueImage(url, index, true)) {
+                            Toast.makeText(this@MainActivityV13, "封面已加入下载队列", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    LinearLayout.LayoutParams(0, dp(54), 1f).apply { rightMargin = dp(5) }
+                )
+                actions.addView(
+                    resourceButton("复制链接", false) { copyText(url, "封面链接已复制") },
+                    LinearLayout.LayoutParams(0, dp(54), 1f).apply { leftMargin = dp(5) }
+                )
+                addView(
+                    actions,
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)).apply {
+                        leftMargin = dp(8)
+                        rightMargin = dp(8)
+                        topMargin = dp(8)
+                        bottomMargin = dp(8)
+                    }
+                )
+            } else {
+                addView(
+                    resourceButton("下载图片", true) {
+                        if (enqueueImage(url, index, false)) {
+                            Toast.makeText(this@MainActivityV13, "已加入下载队列", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
+                        leftMargin = dp(6)
+                        rightMargin = dp(6)
+                        topMargin = dp(6)
+                    }
+                )
+                addView(
+                    resourceButton("复制图片链接", false) { copyText(url, "链接已复制") },
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
+                        leftMargin = dp(6)
+                        rightMargin = dp(6)
+                        topMargin = dp(5)
+                        bottomMargin = dp(6)
+                    }
+                )
+            }
         }
 
-    private fun resourceButton(label: String, action: () -> Unit): Button = Button(this).apply {
-        text = label
-        isAllCaps = false
-        textSize = 13f
-        gravity = Gravity.START or Gravity.CENTER_VERTICAL
-        minHeight = 0
-        minimumHeight = 0
-        minWidth = 0
-        minimumWidth = 0
-        setTextColor(Color.rgb(55, 55, 55))
-        setPadding(dp(12), 0, dp(12), 0)
-        background = rounded(Color.WHITE, 0, Color.rgb(235, 237, 240))
-        setOnClickListener { action() }
-    }
+    private fun resourceButton(label: String, primary: Boolean, action: () -> Unit): Button =
+        Button(this).apply {
+            text = label
+            isAllCaps = false
+            textSize = 14f
+            gravity = Gravity.CENTER
+            minHeight = dp(48)
+            minimumHeight = dp(48)
+            minWidth = 0
+            minimumWidth = 0
+            setTextColor(if (primary) Color.WHITE else Color.rgb(55, 55, 55))
+            setPadding(dp(12), 0, dp(12), 0)
+            background = if (primary) {
+                rounded(Color.rgb(41, 156, 235), 8)
+            } else {
+                rounded(Color.rgb(247, 248, 250), 8, Color.rgb(210, 214, 220))
+            }
+            setOnClickListener { action() }
+        }
 
     private fun messageCard(message: String): TextView = TextView(this).apply {
         text = message
@@ -829,12 +894,15 @@ class MainActivityV13 : AppCompatActivity() {
             return
         }
         val cookies = mapOf(url to CookieManager.getInstance().getCookie(url).orEmpty())
-        statusText.text = "正在下载并验证无水印原视频…"
+        statusText.text = "正在下载视频…"
         XhsVideoDownloader(this).download(
             candidates = listOf(url),
             userAgent = webView.settings.userAgentString.orEmpty(),
             referer = currentPageUrl,
-            cookies = cookies
+            cookies = cookies,
+            status = { message ->
+                runOnUiThread { statusText.text = message }
+            }
         ) { result ->
             runOnUiThread {
                 statusText.text = result.message
