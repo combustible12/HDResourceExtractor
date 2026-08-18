@@ -23,6 +23,7 @@ class XhsVideoDownloader(private val context: Context) {
         userAgent: String,
         referer: String,
         cookies: Map<String, String>,
+        status: ((String) -> Unit)? = null,
         callback: (Result) -> Unit
     ) {
         Thread {
@@ -31,31 +32,72 @@ class XhsVideoDownloader(private val context: Context) {
                 return@Thread
             }
 
+            val maxAttemptsPerSource = 3
             var lastReason = "视频源不可用"
+
             candidates.forEachIndexed { index, url ->
-                try {
-                    val fetched = fetchCandidate(
-                        url = url,
-                        userAgent = userAgent,
-                        referer = referer,
-                        cookie = cookies[url].orEmpty(),
-                        candidateIndex = index
+                for (attempt in 1..maxAttemptsPerSource) {
+                    status?.invoke(
+                        if (attempt == 1) "正在下载视频…"
+                        else "正在自动重试 $attempt/$maxAttemptsPerSource…"
                     )
-                    if (fetched != null) {
-                        val saved = saveToMediaStore(fetched)
-                        if (saved) {
-                            callback(Result(true, "视频已保存到 Movies/HDResourceExtractor", url))
+
+                    try {
+                        val fetched = fetchCandidate(
+                            url = url,
+                            userAgent = userAgent,
+                            referer = referer,
+                            cookie = cookies[url].orEmpty(),
+                            candidateIndex = index
+                        )
+                        if (fetched != null) {
+                            val saved = saveToMediaStore(fetched)
+                            if (saved) {
+                                callback(Result(true, "视频已保存到 Movies/HDResourceExtractor", url))
+                                return@Thread
+                            }
+                            lastReason = "视频已获取，但写入手机存储失败"
+                        } else {
+                            lastReason = "视频源返回的内容无效"
+                        }
+                    } catch (e: Exception) {
+                        lastReason = friendlyReason(e.message ?: "视频源请求失败")
+                    }
+
+                    if (attempt < maxAttemptsPerSource) {
+                        status?.invoke(
+                            "$lastReason，正在自动重试 ${attempt + 1}/$maxAttemptsPerSource…"
+                        )
+                        try {
+                            Thread.sleep(1_000)
+                        } catch (_: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            callback(Result(false, "视频下载已中断"))
                             return@Thread
                         }
-                        lastReason = "视频已获取，但写入手机存储失败"
                     }
-                } catch (e: Exception) {
-                    lastReason = e.message ?: "视频源请求失败"
                 }
             }
 
-            callback(Result(false, "视频下载失败：已自动尝试 ${candidates.size} 个源；$lastReason"))
+            callback(
+                Result(
+                    false,
+                    "视频下载失败：已自动重试 $maxAttemptsPerSource 次；$lastReason"
+                )
+            )
         }.start()
+    }
+
+    private fun friendlyReason(raw: String): String {
+        val lower = raw.lowercase()
+        return when {
+            lower.contains("connection closed") ||
+                lower.contains("connection reset") ||
+                lower.contains("unexpected end") ||
+                lower.contains("broken pipe") -> "连接中断"
+            lower.contains("timed out") || lower.contains("timeout") -> "连接超时"
+            else -> raw
+        }
     }
 
     private fun fetchCandidate(
@@ -120,6 +162,9 @@ class XhsVideoDownloader(private val context: Context) {
                 }
 
                 return tempFile
+            } catch (e: Exception) {
+                tempFile?.delete()
+                throw e
             } finally {
                 connection?.disconnect()
             }
