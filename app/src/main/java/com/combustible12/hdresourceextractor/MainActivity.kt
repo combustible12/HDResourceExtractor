@@ -9,7 +9,6 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
-import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -24,6 +23,9 @@ import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import java.net.URLDecoder
 import java.util.Locale
 
@@ -52,10 +54,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildUi() {
+        val contentPadding = (16 * resources.displayMetrics.density).toInt()
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(16, 16, 16, 16)
             setBackgroundColor(Color.WHITE)
+        }
+
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val systemInsets = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            view.setPadding(
+                contentPadding + systemInsets.left,
+                contentPadding + systemInsets.top,
+                contentPadding + systemInsets.right,
+                contentPadding + systemInsets.bottom
+            )
+            insets
+        }
+
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
         }
 
         urlInput = EditText(this).apply {
@@ -104,6 +125,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(listView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.85f))
 
         setContentView(root)
+        ViewCompat.requestApplyInsets(root)
     }
 
     @Suppress("SetJavaScriptEnabled")
