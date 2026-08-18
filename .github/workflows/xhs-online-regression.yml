@@ -7,6 +7,7 @@ on:
     paths:
       - 'tests/**'
       - '.github/workflows/xhs-online-regression.yml'
+      - 'app/src/main/assets/xhs_parser.js'
       - 'app/src/main/java/com/combustible12/hdresourceextractor/**'
       - 'app/build.gradle'
 
@@ -44,16 +45,18 @@ jobs:
       - name: Validate exact resources and downloads
         run: node tests/xhs-cloud-regression.mjs
 
+      - name: Validate the same parser Android will use
+        run: node tests/xhs-shared-parser-regression.mjs
+
       - name: Publish readable summaries
         if: always()
         run: |
-          if [ -f test-report/summary.md ]; then
-            cat test-report/summary.md >> "$GITHUB_STEP_SUMMARY"
-          fi
-          if [ -f regression-report/summary.md ]; then
-            printf '\n\n' >> "$GITHUB_STEP_SUMMARY"
-            cat regression-report/summary.md >> "$GITHUB_STEP_SUMMARY"
-          fi
+          for report in test-report/summary.md regression-report/summary.md shared-parser-report/summary.md; do
+            if [ -f "$report" ]; then
+              printf '\n\n' >> "$GITHUB_STEP_SUMMARY"
+              cat "$report" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
 
       - name: Upload probe diagnostics
         if: always()
@@ -70,5 +73,14 @@ jobs:
         with:
           name: xhs-cloud-regression-report
           path: regression-report/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload shared-parser report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: xhs-shared-parser-report
+          path: shared-parser-report/
           if-no-files-found: warn
           retention-days: 14
