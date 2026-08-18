@@ -8,7 +8,13 @@ fs.mkdirSync(OUT, { recursive: true });
 
 const CASES = [
   { id: 'image-7', url: 'https://xhslink.cn/o/AsM8OMpdOLO', kind: 'image' },
-  { id: 'video-1', url: 'https://xhslink.cn/o/91iT26p7qax', kind: 'video' }
+  {
+    id: 'video-1',
+    url: 'https://xhslink.cn/o/91iT26p7qax',
+    kind: 'video',
+    expectedOriginKey: 'pre_post/1040g0cg3239q24ftn2005p3qkr07588e1a7tr98',
+    expectedCover: 'https://ci.xiaohongshu.com/1040g2sg3239psn4ln2fg5p3qkr07588e6q24jdg'
+  }
 ];
 const UA = 'Mozilla/5.0 (Linux; Android 15; Pixel 8 Pro Build/AP4A.250205.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.0.0 Mobile Safari/537.36 HDResourceExtractor/shared-parser-test';
 
@@ -36,31 +42,7 @@ async function open(browser, tc) {
   await page.addScriptTag({ path: PARSER });
   const parsed = await page.evaluate(() => window.HDXhsParser.extract());
   await page.screenshot({ path: path.join(OUT, `${tc.id}.png`), fullPage: true });
-  return { context, page, parsed };
-}
-
-async function validDownload(context, url, referer, type) {
-  const res = await context.request.get(url, {
-    headers: {
-      'User-Agent': UA,
-      Referer: referer,
-      Accept: type === 'video' ? 'video/mp4,video/*;q=0.9,*/*;q=0.5' : 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-      'Accept-Encoding': 'identity'
-    },
-    timeout: 45000,
-    failOnStatusCode: false,
-    maxRedirects: 10
-  });
-  const body = Buffer.from(await res.body());
-  const ct = res.headers()['content-type'] || '';
-  const okStatus = res.status() >= 200 && res.status() < 300;
-  if (type === 'video') {
-    const head = body.subarray(0, 64).toString('latin1');
-    return { ok: okStatus && body.length >= 128 * 1024 && (head.includes('ftyp') || /^video\//i.test(ct)), status: res.status(), bytes: body.length, contentType: ct };
-  }
-  const h = body.subarray(0, 16);
-  const magic = (h[0] === 0xff && h[1] === 0xd8) || (h[0] === 0x89 && h[1] === 0x50) || (h.subarray(0,4).toString('ascii') === 'RIFF' && h.subarray(8,12).toString('ascii') === 'WEBP');
-  return { ok: okStatus && body.length >= 1024 && (magic || /^image\//i.test(ct)), status: res.status(), bytes: body.length, contentType: ct };
+  return { context, parsed };
 }
 
 const browser = await chromium.launch({ headless: true });
@@ -69,7 +51,7 @@ for (const tc of CASES) {
   let session;
   try {
     session = await open(browser, tc);
-    const { context, page, parsed } = session;
+    const { context, parsed } = session;
     fs.writeFileSync(path.join(OUT, `${tc.id}.json`), JSON.stringify(parsed, null, 2));
 
     check(`${tc.id}: parser ok`, parsed.ok === true, `source=${parsed.source}`);
@@ -78,27 +60,29 @@ for (const tc of CASES) {
 
     if (tc.kind === 'image') {
       check('image-7: exact image count', parsed.images?.length === 7, `expected=7 actual=${parsed.images?.length || 0}`);
-      const downloadRows = [];
-      for (const image of parsed.images || []) {
-        const r = await validDownload(context, image.originalUrl, page.url(), 'image');
-        downloadRows.push({ url: image.originalUrl, ...r });
-      }
-      check('image-7: all shared-parser originals downloadable', downloadRows.length === 7 && downloadRows.every(x => x.ok), downloadRows.map(x => `${x.status}/${x.bytes}`).join(', '));
-      fs.writeFileSync(path.join(OUT, 'image-downloads.json'), JSON.stringify(downloadRows, null, 2));
+      const originalUrls = (parsed.images || []).map(x => x.originalUrl).filter(Boolean);
+      check(
+        'image-7: all parser outputs are original image URLs',
+        originalUrls.length === 7 && originalUrls.every(url => /^https:\/\/ci\.xiaohongshu\.com\//i.test(url)),
+        `originals=${originalUrls.length}`
+      );
     } else {
       check('video-1: is video', parsed.isVideo === true, `type=${parsed.type}`);
       check('video-1: cover', Boolean(parsed.cover?.originalUrl), parsed.cover?.originalUrl || '(empty)');
+      check('video-1: exact cover URL', parsed.cover?.originalUrl === tc.expectedCover, parsed.cover?.originalUrl || '(empty)');
       check('video-1: originVideoKey', Boolean(parsed.originVideoKey), parsed.originVideoKey || '(empty)');
+      check('video-1: exact originVideoKey', parsed.originVideoKey === tc.expectedOriginKey, parsed.originVideoKey || '(empty)');
       check('video-1: origin URL host', /^https:\/\/sns-video-bd\.xhscdn\.com\//i.test(parsed.originVideoUrl || ''), parsed.originVideoUrl || '(empty)');
-      check('video-1: playback kept separate', Array.isArray(parsed.playbackUrls) && parsed.playbackUrls.length > 0 && !parsed.playbackUrls.includes(parsed.originVideoUrl), `playback=${parsed.playbackUrls?.length || 0}`);
-      if (parsed.cover?.originalUrl) {
-        const r = await validDownload(context, parsed.cover.originalUrl, page.url(), 'image');
-        check('video-1: cover downloadable', r.ok, `HTTP ${r.status} · ${r.bytes} bytes · ${r.contentType}`);
-      }
-      if (parsed.originVideoUrl) {
-        const r = await validDownload(context, parsed.originVideoUrl, page.url(), 'video');
-        check('video-1: origin downloadable', r.ok, `HTTP ${r.status} · ${r.bytes} bytes · ${r.contentType}`);
-      }
+      check(
+        'video-1: origin URL matches key',
+        parsed.originVideoUrl === `https://sns-video-bd.xhscdn.com/${tc.expectedOriginKey}`,
+        parsed.originVideoUrl || '(empty)'
+      );
+      check(
+        'video-1: playback kept separate',
+        Array.isArray(parsed.playbackUrls) && parsed.playbackUrls.length > 0 && !parsed.playbackUrls.includes(parsed.originVideoUrl),
+        `playback=${parsed.playbackUrls?.length || 0}`
+      );
     }
 
     await context.close();
@@ -111,7 +95,14 @@ await browser.close();
 
 const pass = failures.length === 0;
 fs.writeFileSync(path.join(OUT, 'results.json'), JSON.stringify({ pass, results, failures }, null, 2));
-const md = ['# 共享解析器在线回归', '', `总体：${pass ? '✅ PASS' : '❌ FAIL'}`, '', `解析器：\`app/src/main/assets/xhs_parser.js\``, ''];
+const md = [
+  '# 共享解析器在线回归',
+  '',
+  `总体：${pass ? '✅ PASS' : '❌ FAIL'}`,
+  '',
+  '`xhs_parser.js` 这里只验证 Android 共用解析器是否输出正确资源地址；实际原图/原视频下载由前一步云端资源回归负责，避免重复下载 32MB 原视频。',
+  ''
+];
 for (const r of results) md.push(`- ${r.ok ? '✅' : '❌'} **${r.name}** — ${r.detail}`);
 fs.writeFileSync(path.join(OUT, 'summary.md'), md.join('\n'));
 if (!pass) process.exitCode = 1;
