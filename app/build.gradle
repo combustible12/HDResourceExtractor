@@ -11,8 +11,8 @@ android {
         applicationId 'com.combustible12.hdresourceextractor'
         minSdk 24
         targetSdk 35
-        versionCode 8
-        versionName '0.8.0'
+        versionCode 9
+        versionName '0.9.0'
     }
 
     buildTypes {
@@ -574,9 +574,180 @@ tasks.configureEach { task ->
         synchronized(resources)'''
                 )
 
-                text = text.replace('HDResourceExtractor/0.5', 'HDResourceExtractor/0.8')
-                text = text.replace('HDResourceExtractor/0.6', 'HDResourceExtractor/0.8')
-                text = text.replace('HDResourceExtractor/0.7', 'HDResourceExtractor/0.8')
+                // v0.9: present one logical video, retain all candidates internally for fallback download.
+                if (!text.contains('private var xhsVideoCoverUrl: String')) {
+                    text = text.replace(
+                        '    private var clipboardAutofilledUrl: String = ""\n',
+                        '    private var clipboardAutofilledUrl: String = ""\n    private var xhsVideoCoverUrl: String = ""\n'
+                    )
+                }
+
+                text = text.replace(
+                    '''        val filtered = synchronized(xhsCandidates) {
+            xhsCandidates.values.toList()
+        }
+        val videos = synchronized(xhsVideoCandidates) {
+            xhsVideoCandidates.values.toList()
+        }
+
+        if (videos.isNotEmpty() || filtered.isNotEmpty()) {
+            runOnUiThread {
+                visibleResources.clear()
+                visibleResources.addAll(videos)
+                visibleResources.addAll(filtered)
+                renderResults()
+                statusText.text = when {
+                    videos.isNotEmpty() && filtered.isNotEmpty() ->
+                        "已识别 ${videos.size} 个视频源 · ${filtered.size} 张无水印图片"
+                    videos.isNotEmpty() -> "已识别 ${videos.size} 个小红书视频源"
+                    else -> "已识别 ${filtered.size} 张小红书无水印原图"
+                }
+            }
+            return
+        }
+''',
+                    '''        val filtered = synchronized(xhsCandidates) {
+            xhsCandidates.values.toList()
+        }
+        val rankedVideos = synchronized(xhsVideoCandidates) {
+            xhsVideoCandidates.entries
+                .sortedByDescending { xhsVideoScores[it.key] ?: Int.MIN_VALUE }
+                .map { it.value }
+                .distinct()
+        }
+        val videos = rankedVideos.take(1)
+        val displayImages = if (videos.isNotEmpty()) {
+            xhsVideoCoverUrl = filtered.firstOrNull().orEmpty()
+            emptyList()
+        } else {
+            xhsVideoCoverUrl = ""
+            filtered
+        }
+
+        if (videos.isNotEmpty() || displayImages.isNotEmpty()) {
+            runOnUiThread {
+                visibleResources.clear()
+                visibleResources.addAll(videos)
+                visibleResources.addAll(displayImages)
+                renderResults()
+                statusText.text = when {
+                    videos.isNotEmpty() -> "已识别 1 个小红书视频"
+                    else -> "已识别 ${displayImages.size} 张小红书无水印原图"
+                }
+            }
+            return
+        }
+'''
+                )
+
+                text = text.replace(
+                    '''        if (isLikelyVideoUrl(url)) {
+            imageView.setImageDrawable(ColorDrawable(Color.rgb(45, 48, 54)))
+        } else {
+            imageView.load(url) {
+                crossfade(true)
+                placeholder(ColorDrawable(Color.rgb(235, 237, 240)))
+                error(ColorDrawable(Color.rgb(224, 227, 231)))
+            }
+        }
+''',
+                    '''        if (isLikelyVideoUrl(url)) {
+            if (xhsVideoCoverUrl.isNotBlank()) {
+                imageView.load(xhsVideoCoverUrl) {
+                    crossfade(true)
+                    placeholder(ColorDrawable(Color.rgb(45, 48, 54)))
+                    error(ColorDrawable(Color.rgb(45, 48, 54)))
+                }
+            } else {
+                imageView.setImageDrawable(ColorDrawable(Color.rgb(45, 48, 54)))
+            }
+        } else {
+            imageView.load(url) {
+                crossfade(true)
+                placeholder(ColorDrawable(Color.rgb(235, 237, 240)))
+                error(ColorDrawable(Color.rgb(224, 227, 231)))
+            }
+        }
+'''
+                )
+
+                if (!text.contains('private fun rankedXhsVideoUrls()')) {
+                    def saveMarker = '''    private fun saveAllResources() {
+'''
+                    def reliableVideoHelpers = '''    private fun rankedXhsVideoUrls(): List<String> = synchronized(xhsVideoCandidates) {
+        xhsVideoCandidates.entries
+            .sortedByDescending { xhsVideoScores[it.key] ?: Int.MIN_VALUE }
+            .map { it.value }
+            .distinct()
+    }
+
+    private fun downloadBestXhsVideo(showToast: Boolean = true) {
+        val candidates = rankedXhsVideoUrls()
+        if (candidates.isEmpty()) {
+            if (showToast) Toast.makeText(this, "没有可用的视频源", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val userAgent = webView.settings.userAgentString.orEmpty()
+        val referer = currentPageUrl
+        val cookies = candidates.associateWith { candidate ->
+            CookieManager.getInstance().getCookie(candidate).orEmpty()
+        }
+
+        if (showToast) {
+            Toast.makeText(this, "正在验证并下载视频…", Toast.LENGTH_SHORT).show()
+        }
+        statusText.text = "正在验证视频源并下载…"
+
+        XhsVideoDownloader(this).download(
+            candidates = candidates,
+            userAgent = userAgent,
+            referer = referer,
+            cookies = cookies
+        ) { result ->
+            runOnUiThread {
+                statusText.text = result.message
+                Toast.makeText(
+                    this,
+                    result.message,
+                    if (result.success) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+'''
+                    text = text.replace(saveMarker, reliableVideoHelpers + saveMarker)
+                }
+
+                text = text.replace(
+                    '''    private fun enqueueDownload(url: String, index: Int, showToast: Boolean): Boolean {
+        if (url.startsWith("blob:")) {
+''',
+                    '''    private fun enqueueDownload(url: String, index: Int, showToast: Boolean): Boolean {
+        if (isXhsSession && !xhsFallbackShown && isLikelyVideoUrl(url)) {
+            downloadBestXhsVideo(showToast)
+            return true
+        }
+
+        if (url.startsWith("blob:")) {
+'''
+                )
+
+                text = text.replace(
+                    '            "已加入 $queued 个下载任务",',
+                    '            "已开始保存 $queued 个资源",'
+                )
+
+                text = text.replace(
+                    '        xhsCaption = ""\n        if (::captionCard.isInitialized) {',
+                    '        xhsCaption = ""\n        xhsVideoCoverUrl = ""\n        if (::captionCard.isInitialized) {'
+                )
+
+                text = text.replace('HDResourceExtractor/0.5', 'HDResourceExtractor/0.9')
+                text = text.replace('HDResourceExtractor/0.6', 'HDResourceExtractor/0.9')
+                text = text.replace('HDResourceExtractor/0.7', 'HDResourceExtractor/0.9')
+                text = text.replace('HDResourceExtractor/0.8', 'HDResourceExtractor/0.9')
 
                 source.write(text, 'UTF-8')
             }
