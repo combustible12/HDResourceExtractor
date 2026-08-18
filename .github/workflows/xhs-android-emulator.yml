@@ -18,7 +18,7 @@ jobs:
   android-webview:
     name: Android WebView (7 images + original video)
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -55,10 +55,26 @@ jobs:
 
       - name: Create and boot Android 35 emulator
         run: |
+          set -euxo pipefail
           echo no | avdmanager create avd --force --name xhs-test --package 'system-images;android-35;google_apis;x86_64' --device 'pixel_6'
+          adb start-server
           nohup emulator -avd xhs-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none > emulator.log 2>&1 &
-          adb wait-for-device
-          timeout 360 bash -c 'until [ "$(adb shell getprop sys.boot_completed | tr -d "\r")" = "1" ]; do sleep 5; done'
+
+          if ! timeout 120 adb wait-for-device; then
+            echo 'Android emulator was not detected by ADB within 120 seconds.'
+            adb devices -l || true
+            cat emulator.log || true
+            exit 1
+          fi
+
+          if ! timeout 240 bash -c 'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 5; done'; then
+            echo 'Android emulator did not finish booting within 240 seconds after ADB detection.'
+            adb devices -l || true
+            adb shell getprop || true
+            cat emulator.log || true
+            exit 1
+          fi
+
           adb shell settings put global window_animation_scale 0
           adb shell settings put global transition_animation_scale 0
           adb shell settings put global animator_duration_scale 0
