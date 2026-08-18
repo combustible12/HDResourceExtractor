@@ -11,8 +11,8 @@ android {
         applicationId 'com.combustible12.hdresourceextractor'
         minSdk 24
         targetSdk 35
-        versionCode 6
-        versionName '0.6.0'
+        versionCode 7
+        versionName '0.7.0'
     }
 
     buildTypes {
@@ -57,10 +57,7 @@ tasks.configureEach { task ->
                     'FrameLayout.LayoutParams('
                 )
 
-                // The web page often serves a derived xhscdn URL such as
-                // .../<timestamp>/<hash>/<image-id>!h5_1080jpg.
-                // Convert it to Xiaohongshu's full-image endpoint so previews
-                // and downloads use the original clean image instead.
+                // Xiaohongshu full/original image conversion.
                 if (!text.contains('private fun xhsOriginalImageUrl(')) {
                     def marker = '    private fun isLikelyXhsMainImage('
                     def helper = '''    private fun xhsOriginalImageUrl(url: String): String {
@@ -123,7 +120,181 @@ tasks.configureEach { task ->
                     '"已识别 ${filtered.size} 张小红书正文图片"',
                     '"已识别 ${filtered.size} 张小红书无水印原图"'
                 )
-                text = text.replace('HDResourceExtractor/0.5', 'HDResourceExtractor/0.6')
+
+                // Caption state + UI.
+                if (!text.contains('private lateinit var captionText: TextView')) {
+                    text = text.replace(
+                        '    private lateinit var saveAllButton: Button\n',
+                        '''    private lateinit var saveAllButton: Button
+    private lateinit var captionCard: LinearLayout
+    private lateinit var captionText: TextView
+    private lateinit var copyCaptionButton: Button
+'''
+                    )
+                    text = text.replace(
+                        '    private var xhsFallbackShown: Boolean = false\n',
+                        '''    private var xhsFallbackShown: Boolean = false
+    private var xhsCaption: String = ""
+'''
+                    )
+                }
+
+                if (!text.contains('text = "复制文案"')) {
+                    def uiMarker = '''        val resultHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+'''
+                    def captionUi = '''        captionCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = roundedBackground(Color.WHITE, 10)
+            visibility = View.GONE
+        }
+
+        val captionHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val captionLabel = TextView(this).apply {
+            text = "笔记文案"
+            textSize = 15f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(Color.rgb(36, 36, 36))
+        }
+        captionHeader.addView(
+            captionLabel,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+
+        copyCaptionButton = Button(this).apply {
+            text = "复制文案"
+            isAllCaps = false
+            textSize = 13f
+            setTextColor(Color.rgb(41, 156, 235))
+            minHeight = 0
+            minimumHeight = 0
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(12), 0, dp(12), 0)
+            background = roundedBackground(Color.rgb(239, 248, 255), 8)
+            setOnClickListener {
+                if (xhsCaption.isNotBlank()) copyToClipboard(xhsCaption)
+            }
+        }
+        captionHeader.addView(
+            copyCaptionButton,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
+        )
+        captionCard.addView(
+            captionHeader,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        captionText = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.rgb(55, 55, 55))
+            setLineSpacing(0f, 1.18f)
+            maxLines = 5
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(0, dp(8), 0, 0)
+        }
+        captionCard.addView(
+            captionText,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+        foreground.addView(
+            captionCard,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(10) }
+        )
+
+'''
+                    text = text.replace(uiMarker, captionUi + uiMarker)
+                }
+
+                // Extract title + description from the Xiaohongshu note DOM.
+                if (!text.contains('HDExtractor.setCaption')) {
+                    def scriptMarker = '''              try { HDExtractor.doneXhs(seen.size); } catch(e) {}
+'''
+                    def captionScript = '''              try {
+                const titleEl = document.querySelector('#detail-title');
+                const descEl = document.querySelector('#detail-desc');
+                let title = titleEl ? (titleEl.innerText || titleEl.textContent || '') : '';
+                let desc = descEl ? (descEl.innerText || descEl.textContent || '') : '';
+
+                if (!title) {
+                  const metaTitle = document.querySelector('meta[property="og:title"]');
+                  title = metaTitle ? (metaTitle.getAttribute('content') || '') : '';
+                }
+                if (!desc) {
+                  const metaDesc = document.querySelector('meta[name="description"], meta[property="og:description"]');
+                  desc = metaDesc ? (metaDesc.getAttribute('content') || '') : '';
+                }
+
+                title = String(title || '').trim();
+                desc = String(desc || '').trim();
+                if (title || desc) HDExtractor.setCaption(title, desc);
+              } catch(e) {}
+
+'''
+                    text = text.replace(scriptMarker, captionScript + scriptMarker)
+                }
+
+                if (!text.contains('fun setCaption(title: String, desc: String)')) {
+                    def bridgeMarker = '''        @JavascriptInterface
+        fun doneXhs(count: Int) {
+'''
+                    def bridgeMethod = '''        @JavascriptInterface
+        fun setCaption(title: String, desc: String) {
+            val cleanTitle = title.trim()
+            val cleanDesc = desc.trim()
+            val combined = when {
+                cleanTitle.isNotBlank() && cleanDesc.isNotBlank() && cleanDesc != cleanTitle ->
+                    cleanTitle + "\\n\\n" + cleanDesc
+                cleanDesc.isNotBlank() -> cleanDesc
+                else -> cleanTitle
+            }.trim()
+
+            if (combined.isBlank()) return
+            runOnUiThread {
+                xhsCaption = combined
+                if (::captionCard.isInitialized) {
+                    captionText.text = combined
+                    captionCard.visibility = View.VISIBLE
+                }
+            }
+        }
+
+'''
+                    text = text.replace(bridgeMarker, bridgeMethod + bridgeMarker)
+                }
+
+                // Clear previous caption when a new URL is parsed.
+                text = text.replace(
+                    '''        xhsFallbackShown = false
+
+        synchronized(resources)''',
+                    '''        xhsFallbackShown = false
+        xhsCaption = ""
+        if (::captionCard.isInitialized) {
+            captionText.text = ""
+            captionCard.visibility = View.GONE
+        }
+
+        synchronized(resources)'''
+                )
+
+                text = text.replace('HDResourceExtractor/0.5', 'HDResourceExtractor/0.7')
+                text = text.replace('HDResourceExtractor/0.6', 'HDResourceExtractor/0.7')
 
                 source.write(text, 'UTF-8')
             }
