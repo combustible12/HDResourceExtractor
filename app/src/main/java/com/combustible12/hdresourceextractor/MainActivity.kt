@@ -6,9 +6,12 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.view.Gravity
+import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -53,23 +56,33 @@ class MainActivity : AppCompatActivity() {
         handleIncomingIntent(intent)
     }
 
+    private fun dp(value: Int): Int = (value * getResources().displayMetrics.density).toInt()
+
+    private fun roundedBackground(color: Int, radiusDp: Int): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radiusDp).toFloat()
+        }
+
     private fun buildUi() {
-        val contentPadding = (16 * getResources().displayMetrics.density).toInt()
+        val sidePadding = dp(16)
+        val topBreathingRoom = dp(28)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.WHITE)
         }
 
+        // 方案 A：系统状态栏之外再留 28dp，自然位于上半区；不吸顶，也不垂直居中。
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val systemInsets = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
             )
             view.setPadding(
-                contentPadding + systemInsets.left,
-                contentPadding + systemInsets.top,
-                contentPadding + systemInsets.right,
-                contentPadding + systemInsets.bottom
+                sidePadding + systemInsets.left,
+                systemInsets.top + topBreathingRoom,
+                sidePadding + systemInsets.right,
+                systemInsets.bottom
             )
             insets
         }
@@ -79,31 +92,64 @@ class MainActivity : AppCompatActivity() {
             isAppearanceLightNavigationBars = true
         }
 
+        val title = TextView(this).apply {
+            text = "HD Resource Extractor"
+            textSize = 22f
+            setTextColor(Color.rgb(28, 28, 30))
+        }
+
+        val subtitle = TextView(this).apply {
+            text = "打开网页后提取当前页面可访问的高清资源"
+            textSize = 13f
+            setTextColor(Color.rgb(110, 110, 115))
+        }
+
         urlInput = EditText(this).apply {
             hint = "粘贴网页链接"
             maxLines = 2
+            textSize = 15f
+            setTextColor(Color.rgb(28, 28, 30))
+            setHintTextColor(Color.rgb(150, 150, 155))
+            setPadding(dp(14), 0, dp(14), 0)
+            background = roundedBackground(Color.rgb(245, 245, 247), 12)
         }
 
         val buttonRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
 
         val openButton = Button(this).apply {
-            text = "打开并提取"
+            text = "打开网页"
+            isAllCaps = false
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            background = roundedBackground(Color.rgb(28, 28, 30), 12)
             setOnClickListener { openUrl(urlInput.text.toString()) }
         }
 
         val scanButton = Button(this).apply {
-            text = "重新扫描"
+            text = "提取高清资源"
+            isAllCaps = false
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            background = roundedBackground(Color.rgb(28, 28, 30), 12)
             setOnClickListener { scanDomResources() }
         }
 
-        buttonRow.addView(openButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        buttonRow.addView(scanButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        buttonRow.addView(
+            openButton,
+            LinearLayout.LayoutParams(0, dp(46), 1f)
+        )
+        buttonRow.addView(
+            scanButton,
+            LinearLayout.LayoutParams(0, dp(46), 1f).apply { leftMargin = dp(12) }
+        )
 
         statusText = TextView(this).apply {
             text = "等待网页链接"
-            setPadding(4, 8, 4, 8)
+            textSize = 13f
+            setTextColor(Color.rgb(105, 105, 110))
         }
 
         webView = WebView(this)
@@ -118,11 +164,57 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        root.addView(urlInput, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        root.addView(buttonRow, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        root.addView(statusText, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        root.addView(webView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.15f))
-        root.addView(listView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.85f))
+        root.addView(
+            title,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+        root.addView(
+            subtitle,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(6) }
+        )
+        root.addView(
+            urlInput,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(50)
+            ).apply { topMargin = dp(18) }
+        )
+        root.addView(
+            buttonRow,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(12) }
+        )
+        root.addView(
+            statusText,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(12) }
+        )
+        root.addView(
+            webView,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1.15f
+            ).apply { topMargin = dp(12) }
+        )
+        root.addView(
+            listView,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                0.85f
+            )
+        )
 
         setContentView(root)
         ViewCompat.requestApplyInsets(root)
@@ -150,8 +242,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                statusText.text = "页面已加载，正在扫描高清资源…"
-                scanDomResources()
+                statusText.text = "页面已加载，可浏览后点击“提取高清资源”"
             }
         }
     }
@@ -189,6 +280,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun scanDomResources() {
+        if (webView.url.isNullOrBlank()) {
+            Toast.makeText(this, "请先打开网页", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        statusText.text = "正在扫描页面资源…"
         val script = """
             (function() {
               const found = new Set();
@@ -299,6 +396,7 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "资源链接已复制", Toast.LENGTH_SHORT).show()
     }
 
+    @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (webView.canGoBack()) webView.goBack() else super.onBackPressed()
     }
