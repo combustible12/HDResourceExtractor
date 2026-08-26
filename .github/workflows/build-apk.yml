@@ -3,7 +3,7 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, work/xhs-live-douyin ]
     paths:
       - 'app/**'
       - 'build.gradle'
