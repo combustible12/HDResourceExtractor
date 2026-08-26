@@ -49,6 +49,9 @@ jobs:
       - name: Validate the same parser Android will use
         run: node tests/xhs-shared-parser-regression.mjs
 
+      - name: Validate XHS Live Photo and Douyin parsers
+        run: node tests/platform-parser-regression.mjs
+
       - name: Probe page structure after a failure
         if: failure()
         run: node tests/xhs-online-probe.mjs

@@ -98,6 +98,36 @@
     };
   }
 
+  function liveMotionUrl(item) {
+    if (!item || typeof item !== 'object') return '';
+    var urls = [];
+    var seen = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+    function walk(value, key, depth) {
+      if (value == null || depth > 9) return;
+      if (typeof value === 'string') {
+        var url = cleanUrl(value);
+        if (/^https?:/i.test(url) && /(sns-video|\.mp4(?:[?#]|$)|\/stream\/)/i.test(url)) {
+          urls.push({ url: url, score: /(masterUrl|origin|play)/i.test(key) ? 20 : 0 });
+        }
+        return;
+      }
+      if (typeof value !== 'object') return;
+      try { if (seen && seen.has(value)) return; if (seen) seen.add(value); } catch (_) {}
+      if (Array.isArray(value)) {
+        value.forEach(function (child) { walk(child, key, depth + 1); });
+      } else {
+        Object.keys(value).forEach(function (childKey) {
+          walk(value[childKey], childKey, depth + 1);
+        });
+      }
+    }
+    ['live', 'livePhoto', 'live_photo', 'livePhotoInfo', 'live_photo_info', 'video', 'stream'].forEach(function (key) {
+      try { walk(item[key], key, 0); } catch (_) {}
+    });
+    urls.sort(function (a, b) { return b.score - a.score; });
+    return urls.length ? urls[0].url : '';
+  }
+
   function noteScore(obj, expectedId) {
     if (!obj || typeof obj !== 'object') return -1;
     var score = 0;
@@ -263,7 +293,11 @@
     var images = imageList.map(function (item, index) { return normalizeImage(item, index); })
       .filter(function (item) { return Boolean(item.originalUrl || item.displayUrls.length); });
 
-    var isVideo = Boolean(note.video);
+    var livePhotos = imageList.map(function (item, index) {
+      var motionUrl = liveMotionUrl(item);
+      return motionUrl ? { index: index, image: normalizeImage(item, index), motionUrl: motionUrl } : null;
+    }).filter(Boolean);
+    var isVideo = Boolean(note.video) && livePhotos.length === 0;
     var originKey = '';
     try { originKey = cleanString(note.video && note.video.consumer && note.video.consumer.originVideoKey).replace(/^\/+/, ''); } catch (_) {}
     var originUrl = originKey ? 'https://sns-video-bd.xhscdn.com/' + originKey : '';
@@ -286,15 +320,16 @@
       source: found.source,
       score: found.score,
       noteId: noteId,
-      type: isVideo ? 'video' : 'image',
+      type: livePhotos.length ? 'live_photo' : (isVideo ? 'video' : 'image'),
       title: title,
       desc: desc,
       tags: tags,
       caption: [title, desc, tags.join(' ')].filter(Boolean).join('\n\n'),
       images: isVideo ? [] : images,
+      livePhotos: livePhotos,
       cover: cover,
       originVideoKey: originKey,
-      originVideoUrl: originUrl,
+      originVideoUrl: livePhotos.length ? '' : originUrl,
       playbackUrls: playbackUrls(note),
       isVideo: isVideo
     };

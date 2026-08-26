@@ -63,6 +63,7 @@ class MainActivityV13 : AppCompatActivity() {
     private val networkImages = linkedMapOf<String, String>()
     private val networkImageScores = mutableMapOf<String, Int>()
     private val playbackVideos = linkedSetOf<String>()
+    private val motionVideos = mutableListOf<String>()
 
     private var caption = ""
     private var coverUrl = ""
@@ -70,12 +71,16 @@ class MainActivityV13 : AppCompatActivity() {
     private var structuredType = ""
     private var currentPageUrl = ""
     private var xhsSession = false
+    private var douyinSession = false
     private var finalized = false
     private var lastClipboardUrl = ""
     private var clipboardAutofillUrl = ""
 
     private val parserSource: String by lazy {
         assets.open("xhs_parser.js").bufferedReader(Charsets.UTF_8).use { it.readText() }
+    }
+    private val douyinParserSource: String by lazy {
+        assets.open("douyin_parser.js").bufferedReader(Charsets.UTF_8).use { it.readText() }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -388,7 +393,7 @@ class MainActivityV13 : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 if (!url.isNullOrBlank() && url != "about:blank") currentPageUrl = url
-                if (xhsSession) scheduleParser()
+                if (xhsSession || douyinSession) scheduleParser()
             }
         }
     }
@@ -417,7 +422,7 @@ class MainActivityV13 : AppCompatActivity() {
     }
 
     private fun scheduleParser() {
-        statusText.text = "正在读取小红书笔记数据…"
+        statusText.text = if (douyinSession) "正在读取抖音作品数据…" else "正在读取小红书笔记数据…"
         runParser()
         handler.postDelayed({ runParser() }, 700)
         handler.postDelayed({ runParser() }, 1800)
@@ -427,11 +432,12 @@ class MainActivityV13 : AppCompatActivity() {
     }
 
     private fun runParser() {
-        if (!xhsSession) return
+        if (!xhsSession && !douyinSession) return
         val script = buildString {
-            append(parserSource)
+            append(if (douyinSession) douyinParserSource else parserSource)
             append("\n;(function(){try{")
-            append("var r=window.HDXhsParser.extract();")
+            append("var r=")
+            append(if (douyinSession) "window.HDDouyinParser.extract();" else "window.HDXhsParser.extract();")
             append("HDNative.onParsed(JSON.stringify(r));")
             append("}catch(e){HDNative.onParserError(String((e&&e.stack)||e));}})();")
         }
@@ -456,6 +462,13 @@ class MainActivityV13 : AppCompatActivity() {
 
                 val newCover = parserImageUrl(result.optJSONObject("cover")).orEmpty()
                 val newOrigin = cleanHttpUrl(result.optString("originVideoUrl")).orEmpty()
+                val liveMotions = mutableListOf<String>()
+                result.optJSONArray("livePhotos")?.let { array ->
+                    for (i in 0 until array.length()) {
+                        cleanHttpUrl(array.optJSONObject(i)?.optString("motionUrl").orEmpty())
+                            ?.let(liveMotions::add)
+                    }
+                }
                 val playback = mutableListOf<String>()
                 result.optJSONArray("playbackUrls")?.let { array ->
                     for (i in 0 until array.length()) {
@@ -470,6 +483,13 @@ class MainActivityV13 : AppCompatActivity() {
                         if (type == "image" && exactImages.isNotEmpty()) {
                             structuredImages.clear()
                             structuredImages.addAll(exactImages.distinct())
+                        }
+                        if (type == "live_photo" && liveMotions.isNotEmpty()) {
+                            structuredImages.clear()
+                            structuredImages.addAll(exactImages.distinct())
+                            motionVideos.clear()
+                            motionVideos.addAll(liveMotions.distinct())
+                            originVideoUrl = ""
                         }
                         if (type == "video") {
                             if (newCover.isNotBlank()) coverUrl = newCover
@@ -600,7 +620,7 @@ class MainActivityV13 : AppCompatActivity() {
     }
 
     private fun finalizeResults() {
-        if (!xhsSession) return
+        if (!xhsSession && !douyinSession) return
         finalized = true
         runOnUiThread {
             render()
@@ -612,12 +632,14 @@ class MainActivityV13 : AppCompatActivity() {
         val images = visibleImages()
         val playbackCount = synchronized(playbackVideos) { playbackVideos.size }
         statusText.text = when {
+            motionVideos.isNotEmpty() ->
+                "已识别 ${motionVideos.size} 个真实动态资源${if (structuredImages.isNotEmpty()) " · 原图 ${structuredImages.size} 张" else ""}"
             originVideoUrl.isNotBlank() ->
-                "已读取 1 个小红书无水印原视频${if (coverUrl.isNotBlank()) " · 封面图已保留" else ""}"
+                "已读取 1 个${if (douyinSession) "抖音" else "小红书"}原视频${if (coverUrl.isNotBlank()) " · 封面图已保留" else ""}"
             structuredType == "video" ->
                 "已识别视频笔记，但未读取到无水印原视频${if (playbackCount > 0) " · 播放流仅作兜底诊断" else ""}"
             structuredImages.isNotEmpty() ->
-                "已识别 ${structuredImages.size} 张小红书无水印原图"
+                "已识别 ${structuredImages.size} 张${if (douyinSession) "抖音" else "小红书"}原图"
             domFallbackImages.isNotEmpty() ->
                 "结构化数据未就绪，已从正文恢复 ${domFallbackImages.size} 张图片"
             final && images.isNotEmpty() ->
@@ -636,9 +658,11 @@ class MainActivityV13 : AppCompatActivity() {
 
         val images = visibleImages()
         val hasVideo = originVideoUrl.isNotBlank()
+        val hasMotion = motionVideos.isNotEmpty()
         val hasCover = coverUrl.isNotBlank()
 
         resultTitle.text = when {
+            hasMotion -> "动态/实况（${motionVideos.size}） · 原图（${images.size}）"
             hasVideo && hasCover -> "无水印视频（1） · 封面图（1）"
             hasVideo -> "无水印视频（1）"
             images.isNotEmpty() -> "无水印原图（${images.size}）"
@@ -646,8 +670,9 @@ class MainActivityV13 : AppCompatActivity() {
             else -> "提取结果"
         }
 
-        saveAllButton.visibility = if (hasVideo || hasCover || images.isNotEmpty()) View.VISIBLE else View.GONE
+        saveAllButton.visibility = if (hasVideo || hasMotion || hasCover || images.isNotEmpty()) View.VISIBLE else View.GONE
         saveAllButton.text = when {
+            hasMotion -> "保存全部动态资源"
             hasVideo && hasCover -> "保存视频+封面"
             hasVideo -> "保存视频"
             images.isNotEmpty() -> "保存全部图片"
@@ -655,6 +680,14 @@ class MainActivityV13 : AppCompatActivity() {
         }
 
         when {
+            hasMotion -> {
+                section("动态/实况原始运动内容")
+                motionVideos.forEachIndexed { index, url -> resultList.addView(motionCard(url, index)) }
+                if (images.isNotEmpty()) {
+                    section("配对原图")
+                    addImageGrid(images)
+                }
+            }
             hasVideo -> {
                 resultList.addView(videoCard())
                 if (hasCover) {
@@ -684,6 +717,22 @@ class MainActivityV13 : AppCompatActivity() {
                 setPadding(0, dp(12), 0, dp(8))
             }
         )
+    }
+
+    private fun motionCard(url: String, index: Int): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(12), dp(10), dp(12), dp(10))
+        background = rounded(Color.WHITE, 10)
+        addView(TextView(this@MainActivityV13).apply {
+            text = "动态 ${index + 1} · 原始运动文件"
+            textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(Color.rgb(45, 45, 45))
+        })
+        val actions = LinearLayout(this@MainActivityV13).apply { orientation = LinearLayout.HORIZONTAL }
+        actions.addView(resourceButton("下载动态", true) { downloadMotion(url, index) }, LinearLayout.LayoutParams(0, dp(54), 1f).apply { rightMargin = dp(5) })
+        actions.addView(resourceButton("复制链接", false) { copyText(url, "动态链接已复制") }, LinearLayout.LayoutParams(0, dp(54), 1f).apply { leftMargin = dp(5) })
+        addView(actions, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)).apply { topMargin = dp(8) })
     }
 
     private fun addImageGrid(images: List<String>) {
@@ -850,8 +899,9 @@ class MainActivityV13 : AppCompatActivity() {
         resetState()
         currentPageUrl = url
         xhsSession = isXhs(url)
+        douyinSession = isDouyin(url)
         urlInput.setText(url)
-        statusText.text = if (xhsSession) "正在打开小红书笔记…" else "正在打开网页…"
+        statusText.text = when { xhsSession -> "正在打开小红书笔记…"; douyinSession -> "正在打开抖音作品…"; else -> "正在打开网页…" }
         webView.loadUrl(url)
     }
 
@@ -862,7 +912,7 @@ class MainActivityV13 : AppCompatActivity() {
         }
         finalized = false
         statusText.text = "重新读取当前页面…"
-        if (xhsSession) {
+        if (xhsSession || douyinSession) {
             runParser()
             handler.postDelayed({ runParser() }, 800)
             handler.postDelayed({ finalizeResults() }, 2600)
@@ -878,10 +928,12 @@ class MainActivityV13 : AppCompatActivity() {
             networkImageScores.clear()
         }
         synchronized(playbackVideos) { playbackVideos.clear() }
+        motionVideos.clear()
         caption = ""
         coverUrl = ""
         originVideoUrl = ""
         structuredType = ""
+        douyinSession = false
         finalized = false
         if (::captionBox.isInitialized) captionBox.visibility = View.GONE
         render()
@@ -915,10 +967,25 @@ class MainActivityV13 : AppCompatActivity() {
         }
     }
 
+    private fun downloadMotion(url: String, index: Int) {
+        val cookies = mapOf(url to CookieManager.getInstance().getCookie(url).orEmpty())
+        XhsVideoDownloader(this).download(
+            candidates = listOf(url),
+            userAgent = webView.settings.userAgentString.orEmpty(),
+            referer = currentPageUrl,
+            cookies = cookies,
+            status = { message -> runOnUiThread { statusText.text = "动态 ${index + 1}：$message" } }
+        ) { result -> runOnUiThread { statusText.text = result.message } }
+    }
+
     private fun saveAll() {
         var queued = 0
         if (originVideoUrl.isNotBlank()) {
             downloadOriginalVideo()
+            queued += 1
+        }
+        motionVideos.forEachIndexed { index, url ->
+            downloadMotion(url, index)
             queued += 1
         }
         if (coverUrl.isNotBlank()) {
@@ -1001,6 +1068,11 @@ class MainActivityV13 : AppCompatActivity() {
     private fun isXhs(url: String): Boolean {
         val lower = url.lowercase(Locale.US)
         return lower.contains("xhslink.cn") || lower.contains("xiaohongshu.com")
+    }
+
+    private fun isDouyin(url: String): Boolean {
+        val lower = url.lowercase(Locale.US)
+        return lower.contains("douyin.com") || lower.contains("iesdouyin.com")
     }
 
     private fun cleanHttpUrl(raw: String): String? {
