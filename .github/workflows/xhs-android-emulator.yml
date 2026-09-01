@@ -1,0 +1,267 @@
+name: XHS Android WebView Regression
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'app/src/main/assets/xhs_parser.js'
+      - 'app/src/main/java/com/combustible12/hdresourceextractor/**'
+      - 'app/src/debug/AndroidManifest.xml'
+      - 'app/build.gradle'
+      - '.github/workflows/xhs-android-emulator.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xhs-android-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-webview:
+    name: Android WebView (7 images + real video download)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android emulator image
+        run: sdkmanager 'platforms;android-35' 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64'
+
+      - name: Install emulator runtime dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpulse0
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.7'
+          cache-provider: basic
+
+      - name: Build current debug APK
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          sudo chmod 666 /dev/kvm || true
+
+      - name: Create and boot Android 35 emulator
+        run: |
+          set -euxo pipefail
+          EMULATOR="$ANDROID_HOME/emulator/emulator"
+          AVDMANAGER="$(dirname "$(command -v sdkmanager)")/avdmanager"
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/android-avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+
+          if [ ! -x "$EMULATOR" ]; then
+            echo "Android emulator binary not found at $EMULATOR"
+            ls -la "$ANDROID_HOME/emulator" || true
+            exit 1
+          fi
+          if [ ! -x "$AVDMANAGER" ]; then
+            echo "avdmanager not found at $AVDMANAGER"
+            command -v sdkmanager || true
+            exit 1
+          fi
+          "$EMULATOR" -version | head -n 3
+
+          printf 'no\n' | "$AVDMANAGER" create avd --force --name xhs-test --package 'system-images;android-35;google_apis;x86_64' --device 'pixel_6'
+          "$AVDMANAGER" list avd
+          test -f "$ANDROID_AVD_HOME/xhs-test.ini"
+
+          adb start-server
+          nohup "$EMULATOR" -avd xhs-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none > emulator.log 2>&1 &
+          EMULATOR_PID=$!
+
+          sleep 5
+          if ! kill -0 "$EMULATOR_PID" 2>/dev/null; then
+            echo 'Android emulator process exited immediately.'
+            cat emulator.log || true
+            exit 1
+          fi
+
+          if ! timeout 90 adb wait-for-device; then
+            echo 'Android emulator was not detected by ADB within 90 seconds.'
+            adb devices -l || true
+            cat emulator.log || true
+            exit 1
+          fi
+
+          if ! timeout 180 bash -c 'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 3; done'; then
+            echo 'Android emulator did not finish booting within 180 seconds after ADB detection.'
+            adb devices -l || true
+            adb shell getprop || true
+            cat emulator.log || true
+            exit 1
+          fi
+
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          adb shell input keyevent 82 || true
+          adb shell wm size 1080x2400
+          adb shell wm density 420
+          adb shell dumpsys webviewupdate || true
+
+      - name: Install APK
+        run: |
+          adb install -r app/build/outputs/apk/debug/app-debug.apk
+          mkdir -p android-report
+          adb shell pm list packages | grep com.combustible12.hdresourceextractor
+
+      - name: Test 7-image note in real Android WebView
+        run: |
+          set -euxo pipefail
+          PKG='com.combustible12.hdresourceextractor'
+          ACT='com.combustible12.hdresourceextractor/.MainActivityV13'
+          URL='https://xhslink.cn/o/AsM8OMpdOLO'
+          adb logcat -c || true
+          adb shell am force-stop "$PKG"
+          adb shell am start -W -n "$ACT" -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT "$URL"
+
+          for attempt in $(seq 1 10); do
+            sleep 3
+            adb shell uiautomator dump /sdcard/image-note.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/image-note.xml android-report/image-note.xml >/dev/null 2>&1 || true
+            if grep -Fq '无水印原图（7）' android-report/image-note.xml 2>/dev/null && grep -Fq '笔记文案' android-report/image-note.xml 2>/dev/null; then
+              echo "Image note ready after $((attempt * 3)) seconds."
+              break
+            fi
+          done
+
+          adb exec-out screencap -p > android-report/image-note.png
+          adb logcat -d -v time > android-report/image-note-logcat.txt || true
+          grep -F '无水印原图（7）' android-report/image-note.xml
+          grep -F '笔记文案' android-report/image-note.xml
+
+      - name: Test video note and real MP4 download in Android WebView
+        run: |
+          set -euxo pipefail
+          PKG='com.combustible12.hdresourceextractor'
+          ACT='com.combustible12.hdresourceextractor/.MainActivityV13'
+          URL='https://xhslink.cn/o/91iT26p7qax'
+          adb logcat -c || true
+          adb shell am force-stop "$PKG"
+          adb shell am start -W -n "$ACT" -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT "$URL"
+
+          for attempt in $(seq 1 10); do
+            sleep 3
+            adb shell uiautomator dump /sdcard/video-note.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/video-note.xml android-report/video-note.xml >/dev/null 2>&1 || true
+            if grep -Fq '无水印视频（1）' android-report/video-note.xml 2>/dev/null && grep -Fq '封面图（1）' android-report/video-note.xml 2>/dev/null && grep -Fq '笔记文案' android-report/video-note.xml 2>/dev/null && grep -Fq '下载视频' android-report/video-note.xml 2>/dev/null; then
+              echo "Video note ready after $((attempt * 3)) seconds."
+              break
+            fi
+          done
+
+          adb exec-out screencap -p > android-report/video-note.png
+          grep -F '无水印视频（1）' android-report/video-note.xml
+          grep -F '封面图（1）' android-report/video-note.xml
+          grep -F '笔记文案' android-report/video-note.xml
+          grep -F '下载视频' android-report/video-note.xml
+
+          adb shell rm -rf /sdcard/Movies/HDResourceExtractor || true
+
+          BUTTON_CENTER="$(python3 - <<'PY'
+          import re
+          import xml.etree.ElementTree as ET
+          root = ET.parse('android-report/video-note.xml').getroot()
+          for node in root.iter('node'):
+              if node.attrib.get('text') == '下载视频':
+                  match = re.fullmatch(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', node.attrib.get('bounds', ''))
+                  if not match:
+                      raise SystemExit('下载视频按钮 bounds 无效')
+                  x1, y1, x2, y2 = map(int, match.groups())
+                  print((x1 + x2) // 2, (y1 + y2) // 2)
+                  break
+          else:
+              raise SystemExit('没有找到下载视频按钮')
+          PY
+          )"
+          read -r TAP_X TAP_Y <<< "$BUTTON_CENTER"
+          adb shell input tap "$TAP_X" "$TAP_Y"
+
+          DOWNLOAD_OK=0
+          VIDEO_PATH=''
+          for attempt in $(seq 1 30); do
+            sleep 3
+            adb shell uiautomator dump /sdcard/video-download.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/video-download.xml android-report/video-download.xml >/dev/null 2>&1 || true
+            VIDEO_PATH="$(adb shell 'find /sdcard/Movies/HDResourceExtractor -type f -name "*.mp4" 2>/dev/null | head -n 1' | tr -d '\r')"
+            if grep -Fq '视频已保存到 Movies/HDResourceExtractor' android-report/video-download.xml 2>/dev/null && [ -n "$VIDEO_PATH" ]; then
+              DOWNLOAD_OK=1
+              echo "Video download finished after $((attempt * 3)) seconds: $VIDEO_PATH"
+              break
+            fi
+          done
+
+          adb exec-out screencap -p > android-report/video-download.png
+          adb logcat -d -v time > android-report/video-note-logcat.txt || true
+
+          if [ "$DOWNLOAD_OK" -ne 1 ] || [ -z "$VIDEO_PATH" ]; then
+            echo 'Real MP4 download did not finish successfully.'
+            cat android-report/video-download.xml 2>/dev/null || true
+            adb shell ls -la /sdcard/Movies/HDResourceExtractor 2>/dev/null || true
+            exit 1
+          fi
+
+          VIDEO_SIZE="$(adb shell "stat -c %s '$VIDEO_PATH'" | tr -d '\r' | tail -n 1)"
+          test "$VIDEO_SIZE" -gt 131072
+          {
+            echo "downloaded_video=$VIDEO_PATH"
+            echo "bytes=$VIDEO_SIZE"
+          } | tee android-report/video-download.txt
+
+      - name: Upload tested APK
+        if: success()
+        uses: actions/upload-artifact@v6
+        with:
+          name: HDResourceExtractor-tested-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Write Android WebView summary
+        if: always()
+        run: |
+          {
+            echo '# Android WebView 真机环境回归'
+            echo
+            if grep -Fq '无水印原图（7）' android-report/image-note.xml 2>/dev/null; then
+              echo '- ✅ 7 图笔记：Android WebView 输出 7 张正文原图'
+            else
+              echo '- ❌ 7 图笔记：未输出预期 7 张'
+            fi
+            if grep -Fq '无水印视频（1）' android-report/video-note.xml 2>/dev/null && grep -Fq '封面图（1）' android-report/video-note.xml 2>/dev/null && grep -Fq 'downloaded_video=' android-report/video-download.txt 2>/dev/null; then
+              echo '- ✅ 视频笔记：识别原视频/封面，并实际下载 MP4 到 Android 媒体目录'
+            else
+              echo '- ❌ 视频笔记：识别或真实 MP4 下载未完整通过'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Android screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: xhs-android-webview-report
+          path: |
+            android-report/
+            emulator.log
+          if-no-files-found: warn
+          retention-days: 7

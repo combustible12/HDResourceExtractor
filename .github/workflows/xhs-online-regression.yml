@@ -1,0 +1,81 @@
+name: XHS Online Regression
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ work/xhs-live-douyin ]
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'tests/**'
+      - '.github/workflows/xhs-online-regression.yml'
+      - 'app/src/main/assets/xhs_parser.js'
+      - 'app/src/main/java/com/combustible12/hdresourceextractor/**'
+      - 'app/build.gradle'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xhs-online-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: Cloud regression (7 images + original video)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Install Playwright
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+
+      - name: Ensure ffmpeg is available
+        run: |
+          command -v ffprobe >/dev/null || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+          ffprobe -version | head -n 1
+
+      - name: Validate exact resources and downloads
+        run: node tests/xhs-cloud-regression.mjs
+
+      - name: Validate the same parser Android will use
+        run: node tests/xhs-shared-parser-regression.mjs
+
+      - name: Validate XHS Live Photo and Douyin parsers
+        run: node tests/platform-parser-regression.mjs
+
+      - name: Probe page structure after a failure
+        if: failure()
+        run: node tests/xhs-online-probe.mjs
+
+      - name: Publish readable summaries
+        if: always()
+        run: |
+          for report in regression-report/summary.md shared-parser-report/summary.md test-report/summary.md; do
+            if [ -f "$report" ]; then
+              printf '\n\n' >> "$GITHUB_STEP_SUMMARY"
+              cat "$report" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: xhs-online-failure-report
+          path: |
+            regression-report/
+            shared-parser-report/
+            test-report/
+          if-no-files-found: warn
+          retention-days: 14
