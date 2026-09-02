@@ -106,6 +106,9 @@ class MainActivity : AppCompatActivity() {
         val foreground = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.rgb(247, 248, 250))
+            // Apply the safe fallback immediately. Some devices never dispatch the
+            // insets callback, so relying on the listener alone can leave the title at y=0.
+            setPadding(dp(14), dp(40), dp(14), dp(10))
         }
 
         ViewCompat.setOnApplyWindowInsetsListener(foreground) { view, insets ->
