@@ -85,6 +85,14 @@ jobs:
           "$AVDMANAGER" list avd
           test -f "$ANDROID_AVD_HOME/xhs-test.ini"
 
+          AVD_CONFIG="$ANDROID_AVD_HOME/xhs-test.avd/config.ini"
+          if grep -q '^disk.dataPartition.size=' "$AVD_CONFIG"; then
+            sed -i 's/^disk.dataPartition.size=.*/disk.dataPartition.size=2048M/' "$AVD_CONFIG"
+          else
+            echo 'disk.dataPartition.size=2048M' >> "$AVD_CONFIG"
+          fi
+          grep '^disk.dataPartition.size=' "$AVD_CONFIG"
+
           adb start-server
           # Emulator 37 may otherwise request a 7+ GB userdata partition, which can
           # exceed the remaining disk space on a GitHub-hosted runner after Gradle.
