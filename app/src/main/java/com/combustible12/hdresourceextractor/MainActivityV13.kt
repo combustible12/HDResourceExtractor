@@ -258,7 +258,8 @@ class MainActivityV13 : AppCompatActivity() {
         captionHeader.addView(
             miniButton("复制文案") {
                 if (caption.isNotBlank()) copyText(caption, "文案已复制")
-            }
+            },
+            LinearLayout.LayoutParams(dp(140), dp(54))
         )
         captionBox.addView(captionHeader)
         captionText = TextView(this).apply {
@@ -369,13 +370,13 @@ class MainActivityV13 : AppCompatActivity() {
     private fun miniButton(label: String, action: () -> Unit): Button = Button(this).apply {
         text = label
         isAllCaps = false
-        textSize = 13f
+        textSize = 15f
         setTextColor(Color.rgb(41, 156, 235))
         minHeight = 0
         minimumHeight = 0
         minWidth = 0
         minimumWidth = 0
-        setPadding(dp(10), 0, dp(10), 0)
+        setPadding(dp(16), 0, dp(16), 0)
         background = rounded(Color.rgb(239, 248, 255), 7)
         setOnClickListener { action() }
     }
