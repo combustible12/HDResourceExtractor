@@ -86,7 +86,9 @@ jobs:
           test -f "$ANDROID_AVD_HOME/xhs-test.ini"
 
           adb start-server
-          nohup "$EMULATOR" -avd xhs-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none > emulator.log 2>&1 &
+          # Emulator 37 may otherwise request a 7+ GB userdata partition, which can
+          # exceed the remaining disk space on a GitHub-hosted runner after Gradle.
+          nohup "$EMULATOR" -avd xhs-test -partition-size 2048 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none > emulator.log 2>&1 &
           EMULATOR_PID=$!
 
           sleep 5
