@@ -106,6 +106,9 @@ class MainActivity : AppCompatActivity() {
         val foreground = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.rgb(247, 248, 250))
+            // Apply the safe fallback immediately. Some devices never dispatch the
+            // insets callback, so relying on the listener alone can leave the title at y=0.
+            setPadding(dp(14), dp(40), dp(14), dp(10))
         }
 
         ViewCompat.setOnApplyWindowInsetsListener(foreground) { view, insets ->
@@ -113,9 +116,12 @@ class MainActivity : AppCompatActivity() {
                 WindowInsetsCompat.Type.systemBars() or
                     WindowInsetsCompat.Type.displayCutout()
             )
+            // Some vendor builds report a zero top inset even though their status bar
+            // overlays the app. Keep a small fallback safe area so the title stays clear.
+            val safeTopInset = maxOf(systemInsets.top, dp(28))
             view.setPadding(
                 dp(14) + systemInsets.left,
-                dp(12) + systemInsets.top,
+                dp(12) + safeTopInset,
                 dp(14) + systemInsets.right,
                 dp(10) + systemInsets.bottom
             )
