@@ -1,10 +1,12 @@
 package com.combustible12.hdresourceextractor
 
 import android.app.DownloadManager
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -32,6 +34,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import coil.load
 import org.json.JSONObject
 import java.util.Locale
@@ -57,6 +60,25 @@ class MainActivityV13 : AppCompatActivity() {
     private lateinit var resultList: LinearLayout
 
     private val handler = Handler(Looper.getMainLooper())
+    private val pendingImageDownloads = mutableMapOf<Long, String>()
+    private var downloadReceiverRegistered = false
+    private val downloadReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != DownloadManager.ACTION_DOWNLOAD_COMPLETE) return
+            val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
+            val label = pendingImageDownloads.remove(id) ?: return
+            val manager = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+            val succeeded = manager.query(DownloadManager.Query().setFilterById(id))?.use { cursor ->
+                if (!cursor.moveToFirst()) false else {
+                    val column = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+                    column >= 0 && cursor.getInt(column) == DownloadManager.STATUS_SUCCESSFUL
+                }
+            } ?: false
+            val message = if (succeeded) "$label 下载成功，已保存到相册" else "$label 下载失败，请重试"
+            statusText.text = message
+            Toast.makeText(this@MainActivityV13, message, Toast.LENGTH_LONG).show()
+        }
+    }
 
     private val structuredImages = mutableListOf<String>()
     private val domFallbackImages = mutableListOf<String>()
@@ -87,6 +109,13 @@ class MainActivityV13 : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         buildUi()
         configureWebView()
+        ContextCompat.registerReceiver(
+            this,
+            downloadReceiver,
+            IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        downloadReceiverRegistered = true
         consumeShare(intent)
     }
 
@@ -103,6 +132,10 @@ class MainActivityV13 : AppCompatActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        if (downloadReceiverRegistered) {
+            unregisterReceiver(downloadReceiver)
+            downloadReceiverRegistered = false
+        }
         if (::webView.isInitialized) {
             webView.removeJavascriptInterface("HDNative")
             webView.destroy()
@@ -225,7 +258,8 @@ class MainActivityV13 : AppCompatActivity() {
         captionHeader.addView(
             miniButton("复制文案") {
                 if (caption.isNotBlank()) copyText(caption, "文案已复制")
-            }
+            },
+            LinearLayout.LayoutParams(dp(140), dp(54))
         )
         captionBox.addView(captionHeader)
         captionText = TextView(this).apply {
@@ -336,13 +370,13 @@ class MainActivityV13 : AppCompatActivity() {
     private fun miniButton(label: String, action: () -> Unit): Button = Button(this).apply {
         text = label
         isAllCaps = false
-        textSize = 13f
+        textSize = 15f
         setTextColor(Color.rgb(41, 156, 235))
         minHeight = 0
         minimumHeight = 0
         minWidth = 0
         minimumWidth = 0
-        setPadding(dp(10), 0, dp(10), 0)
+        setPadding(dp(16), 0, dp(16), 0)
         background = rounded(Color.rgb(239, 248, 255), 7)
         setOnClickListener { action() }
     }
@@ -824,7 +858,7 @@ class MainActivityV13 : AppCompatActivity() {
                     LinearLayout.LayoutParams(0, dp(54), 1f).apply { rightMargin = dp(5) }
                 )
                 actions.addView(
-                    resourceButton("复制链接", false) { copyText(url, "封面链接已复制") },
+                    resourceButton("复制链接", false) { copyImageLink(url, "封面链接已复制（JPEG）") },
                     LinearLayout.LayoutParams(0, dp(54), 1f).apply { leftMargin = dp(5) }
                 )
                 addView(
@@ -850,7 +884,7 @@ class MainActivityV13 : AppCompatActivity() {
                     }
                 )
                 addView(
-                    resourceButton("复制图片链接", false) { copyText(url, "链接已复制") },
+                    resourceButton("复制图片链接", false) { copyImageLink(url, "图片链接已复制（JPEG）") },
                     LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
                         leftMargin = dp(6)
                         rightMargin = dp(6)
@@ -1007,9 +1041,11 @@ class MainActivityV13 : AppCompatActivity() {
             } else {
                 "xhs_image_${index + 1}_${System.currentTimeMillis()}.jpg"
             }
-            val request = DownloadManager.Request(Uri.parse(url))
+            val downloadUrl = browserFriendlyImageUrl(url)
+            val request = DownloadManager.Request(Uri.parse(downloadUrl))
                 .setTitle(name)
-                .setDescription("HDResourceExtractor")
+                .setDescription("正在下载原图，完成后会通知")
+                .setMimeType("image/jpeg")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setDestinationInExternalPublicDir(
                     Environment.DIRECTORY_PICTURES,
@@ -1021,13 +1057,18 @@ class MainActivityV13 : AppCompatActivity() {
             webView.settings.userAgentString?.takeIf { it.isNotBlank() }?.let {
                 request.addRequestHeader("User-Agent", it)
             }
-            currentPageUrl.takeIf { it.isNotBlank() }?.let {
-                request.addRequestHeader("Referer", it)
+            val directCdn = isDirectImageCdn(downloadUrl)
+            if (!directCdn) {
+                currentPageUrl.takeIf { it.isNotBlank() }?.let {
+                    request.addRequestHeader("Referer", it)
+                }
+                CookieManager.getInstance().getCookie(downloadUrl)?.takeIf { it.isNotBlank() }?.let {
+                    request.addRequestHeader("Cookie", it)
+                }
             }
-            CookieManager.getInstance().getCookie(url)?.takeIf { it.isNotBlank() }?.let {
-                request.addRequestHeader("Cookie", it)
-            }
-            (getSystemService(DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
+            val id = (getSystemService(DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
+            pendingImageDownloads[id] = if (isCover) "封面" else "图片 ${index + 1}"
+            statusText.text = "图片下载已开始，完成后会通知"
             true
         } catch (_: Exception) {
             false
@@ -1056,7 +1097,10 @@ class MainActivityV13 : AppCompatActivity() {
         lastClipboardUrl = url
         clipboardAutofillUrl = url
         urlInput.setText(url)
-        statusText.text = "已检测到剪贴板链接，点“打开并提取”"
+        statusText.text = "已检测到剪贴板链接，正在自动打开并提取…"
+        handler.postDelayed({
+            if (urlInput.text?.toString()?.trim() == url) openAndExtract()
+        }, 120)
     }
 
     private fun firstUrl(text: String): String? =
@@ -1084,6 +1128,25 @@ class MainActivityV13 : AppCompatActivity() {
         if (value.startsWith("//")) value = "https:$value"
         if (value.startsWith("http://")) value = "https://" + value.removePrefix("http://")
         return value.takeIf { it.startsWith("https://") }
+    }
+
+    private fun isDirectImageCdn(url: String): Boolean {
+        val host = try { Uri.parse(url).host?.lowercase(Locale.US).orEmpty() } catch (_: Exception) { "" }
+        return host == "ci.xiaohongshu.com" || host.endsWith("xhscdn.com") ||
+            host.endsWith("douyinpic.com") || host.endsWith("byteimg.com")
+    }
+
+    private fun browserFriendlyImageUrl(url: String): String {
+        val clean = cleanHttpUrl(url) ?: url
+        val host = try { Uri.parse(clean).host?.lowercase(Locale.US).orEmpty() } catch (_: Exception) { "" }
+        if (host == "ci.xiaohongshu.com" && !clean.contains("imageView2/format/", true)) {
+            return clean + if (clean.contains('?')) "&imageView2/format/jpg" else "?imageView2/format/jpg"
+        }
+        return clean
+    }
+
+    private fun copyImageLink(url: String, toast: String) {
+        copyText(browserFriendlyImageUrl(url), toast)
     }
 
     private fun copyText(text: String, toast: String) {

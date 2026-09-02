@@ -54,6 +54,12 @@ jobs:
       - name: Build current debug APK
         run: gradle :app:assembleDebug --no-daemon --stacktrace
 
+      - name: Free disk space for emulator userdata
+        run: |
+          rm -rf "$HOME/.gradle/caches" "$HOME/.gradle/wrapper/dists"
+          sudo rm -rf /var/lib/apt/lists/*
+          df -h /
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -85,8 +91,18 @@ jobs:
           "$AVDMANAGER" list avd
           test -f "$ANDROID_AVD_HOME/xhs-test.ini"
 
+          AVD_CONFIG="$ANDROID_AVD_HOME/xhs-test.avd/config.ini"
+          if grep -q '^disk.dataPartition.size=' "$AVD_CONFIG"; then
+            sed -i 's/^disk.dataPartition.size=.*/disk.dataPartition.size=2048M/' "$AVD_CONFIG"
+          else
+            echo 'disk.dataPartition.size=2048M' >> "$AVD_CONFIG"
+          fi
+          grep '^disk.dataPartition.size=' "$AVD_CONFIG"
+
           adb start-server
-          nohup "$EMULATOR" -avd xhs-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none > emulator.log 2>&1 &
+          # Emulator 37 may otherwise request a 7+ GB userdata partition, which can
+          # exceed the remaining disk space on a GitHub-hosted runner after Gradle.
+          nohup "$EMULATOR" -avd xhs-test -partition-size 2048 -dns-server 8.8.8.8,1.1.1.1 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none > emulator.log 2>&1 &
           EMULATOR_PID=$!
 
           sleep 5
