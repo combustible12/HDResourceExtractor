@@ -113,9 +113,12 @@ class MainActivity : AppCompatActivity() {
                 WindowInsetsCompat.Type.systemBars() or
                     WindowInsetsCompat.Type.displayCutout()
             )
+            // Some vendor builds report a zero top inset even though their status bar
+            // overlays the app. Keep a small fallback safe area so the title stays clear.
+            val safeTopInset = maxOf(systemInsets.top, dp(28))
             view.setPadding(
                 dp(14) + systemInsets.left,
-                dp(12) + systemInsets.top,
+                dp(12) + safeTopInset,
                 dp(14) + systemInsets.right,
                 dp(10) + systemInsets.bottom
             )
