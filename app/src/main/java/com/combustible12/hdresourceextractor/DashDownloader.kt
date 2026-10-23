@@ -26,6 +26,10 @@ class DashDownloader(private val context: Context) {
                  progress: ((Int, String) -> Unit)? = null) {
         val work = {
             val temps = mutableListOf<File>()
+            val prefs = context.getSharedPreferences("dash_resume", Context.MODE_PRIVATE)
+            val resumeKey = "dash_" + java.security.MessageDigest.getInstance("SHA-256").digest(url.toByteArray()).joinToString("") { "%02x".format(it) }
+            val workDir = File(context.filesDir, "dash_segments").apply { mkdirs() }
+            var success = false
             try {
                 control?.check()
                 val xml = fetch(url, agent, referer, cookie).toString(Charsets.UTF_8)
@@ -37,13 +41,32 @@ class DashDownloader(private val context: Context) {
                 val totalSegments = video.urls.size + audio.urls.size
                 var completedSegments = 0
                 fun retrieve(track: Track): File {
-                    val output = File.createTempFile("dash_${track.type}_", ".mp4", context.cacheDir)
-                    temps.add(output)
-                    FileOutputStream(output).use { stream ->
+                    val output = File(workDir, "${resumeKey}_${track.type}.mp4")
+                    val fingerprint = java.security.MessageDigest.getInstance("SHA-256")
+                        .digest(track.urls.joinToString("\\n").toByteArray())
+                        .joinToString("") { "%02x".format(it) }
+                    val prefix = "${resumeKey}_${track.type}"
+                    var savedIndex = prefs.getInt(prefix + "_index", 0)
+                    var savedBytes = prefs.getLong(prefix + "_bytes", 0L)
+                    if (prefs.getString(prefix + "_fingerprint", "") != fingerprint ||
+                        !output.exists() || output.length() < savedBytes || savedIndex > track.urls.size) {
+                        savedIndex = 0
+                        savedBytes = 0L
+                        prefs.edit().putString(prefix + "_fingerprint", fingerprint)
+                            .putInt(prefix + "_index", 0).putLong(prefix + "_bytes", 0).commit()
+                    }
+                    java.io.RandomAccessFile(output, "rw").use { raf ->
+                        raf.setLength(savedBytes)
+                        raf.seek(savedBytes)
                         track.urls.forEachIndexed { index, segment ->
+                            if (index < savedIndex) {
+                                completedSegments++
+                                progress?.invoke((completedSegments * 90 / totalSegments).coerceAtMost(90), "已恢复 ${track.type} ${index + 1}/${track.urls.size}")
+                                return@forEachIndexed
+                            }
                             control?.check()
                             var failure: Exception? = null
-                            val checkpoint = stream.channel.position()
+                            val checkpoint = raf.filePointer
                             for (attempt in 1..3) {
                                 try {
                                     stream.channel.truncate(checkpoint)
@@ -58,6 +81,9 @@ class DashDownloader(private val context: Context) {
                                 }
                             }
                             if (failure != null) error("${track.type} 片段 ${index + 1} 下载失败：${failure.message}")
+                            raf.fd.sync()
+                            prefs.edit().putInt(prefix + "_index", index + 1)
+                                .putLong(prefix + "_bytes", raf.filePointer).commit()
                             completedSegments++
                             progress?.invoke((completedSegments * 90 / totalSegments).coerceAtMost(90), "${track.type} ${index + 1}/${track.urls.size}")
                         }
@@ -95,11 +121,22 @@ class DashDownloader(private val context: Context) {
                     context.contentResolver.delete(uri, null, null)
                     throw e
                 }
+                success = true
                 callback(true, "DASH 音视频已合并保存至 Movies/HDResourceExtractor")
             } catch (e: Exception) {
                 if (e is SegmentTaskQueue.Stopped) throw e
                 callback(false, "DASH 下载或合并失败：" + (e.message ?: "未知错误"))
-            } finally { temps.forEach { it.delete() } }
+            } finally {
+                temps.forEach { it.delete() }
+                if (success) {
+                    listOf("video", "audio").forEach { type ->
+                        File(workDir, "${resumeKey}_${type}.mp4").delete()
+                        val prefix = "${resumeKey}_${type}"
+                        prefs.edit().remove(prefix + "_fingerprint").remove(prefix + "_index")
+                            .remove(prefix + "_bytes").commit()
+                    }
+                }
+            }
         }
         if (control == null) Thread { work() }.start() else work()
     }
@@ -119,7 +156,7 @@ class DashDownloader(private val context: Context) {
     }
 
     /** Stream segments to disk to avoid retaining large videos in RAM. */
-    private fun fetchTo(raw: String, agent: String, referer: String, cookie: String, output: FileOutputStream, control: SegmentTaskQueue.Control?) {
+    private fun fetchTo(raw: String, agent: String, referer: String, cookie: String, output: java.io.RandomAccessFile, control: SegmentTaskQueue.Control?) {
         val conn = URL(raw).openConnection() as HttpURLConnection
         try {
             conn.connectTimeout = 20000
