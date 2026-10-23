@@ -545,12 +545,16 @@ class MainActivity : AppCompatActivity() {
                     handler.postDelayed({ finalizeXhsResults(allowFallback = false) }, 3000)
                     handler.postDelayed({ scanXhsNoteResources(silent = true) }, 5000)
                     handler.postDelayed({ finalizeXhsResults(allowFallback = true) }, 6500)
+                    handler.postDelayed({ scanXhsNoteResources(silent = true) }, 10000)
+                    handler.postDelayed({ finalizeXhsResults(allowFallback = true) }, 12000)
                 } else {
                     statusText.text = "网页已打开，正在扫描高清资源…"
                     scanDomResources()
                     handler.postDelayed({ scanDomResources(silent = true) }, 1500)
                     handler.postDelayed({ scanDomResources(silent = true) }, 4000)
                     handler.postDelayed({ scanDomResources(silent = true) }, 7000)
+                    handler.postDelayed({ scanDomResources(silent = true) }, 11000)
+                    handler.postDelayed({ scanDomResources(silent = true) }, 16000)
                 }
             }
         }
