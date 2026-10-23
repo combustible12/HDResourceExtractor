@@ -68,6 +68,12 @@ class AppUpdater(private val context: Context) {
     /** Called from the home screen; recovers a completed APK even after process death. */
     fun recoverPendingUpdate(onMessage: (String) -> Unit) {
         val prefs = context.getSharedPreferences("app_update", Context.MODE_PRIVATE)
+        val version = prefs.getString("version", "").orEmpty()
+        val installed = context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+        if (version.isNotBlank() && compareVersions(installed, version) >= 0) {
+            prefs.edit().remove("download_id").remove("install_id").remove("version").apply()
+            return
+        }
         val id = prefs.getLong("download_id", prefs.getLong("install_id", -1L))
         if (id <= 0) return
         val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
@@ -125,7 +131,7 @@ class AppUpdater(private val context: Context) {
                 .setMimeType("application/vnd.android.package-archive")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setDestinationInExternalFilesDir(
-                    context, Environment.DIRECTORY_DOWNLOADS, "HDResourceExtractor-update.apk"
+                    context, Environment.DIRECTORY_DOWNLOADS, "HDResourceExtractor-" + version + ".apk"
                 )
             var id = -1L
             context.getSharedPreferences("app_update", Context.MODE_PRIVATE).edit().putString("version", version).apply()
