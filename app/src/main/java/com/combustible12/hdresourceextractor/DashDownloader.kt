@@ -22,21 +22,26 @@ import java.nio.ByteBuffer
 /** Downloads clear DASH SegmentList audio/video representations and muxes their samples. */
 class DashDownloader(private val context: Context) {
     data class Track(val type: String, val bandwidth: Long, val urls: List<String>)
-    fun download(url: String, agent: String, referer: String, cookie: String, callback: (Boolean, String) -> Unit) {
-        Thread {
+    fun download(url: String, agent: String, referer: String, cookie: String, callback: (Boolean, String) -> Unit, control: SegmentTaskQueue.Control? = null,
+                 progress: ((Int, String) -> Unit)? = null) {
+        val work = {
             val temps = mutableListOf<File>()
             try {
+                control?.check()
                 val xml = fetch(url, agent, referer, cookie).toString(Charsets.UTF_8)
                 val tracks = parse(url, xml)
                 val video = tracks.filter { it.type == "video" }.maxByOrNull { it.bandwidth }
                     ?: error("DASH 未找到视频轨道")
                 val audio = tracks.filter { it.type == "audio" }.maxByOrNull { it.bandwidth }
                     ?: error("DASH 未找到音频轨道")
+                val totalSegments = video.urls.size + audio.urls.size
+                var completedSegments = 0
                 fun retrieve(track: Track): File {
                     val output = File.createTempFile("dash_${track.type}_", ".mp4", context.cacheDir)
                     temps.add(output)
                     FileOutputStream(output).use { stream ->
                         track.urls.forEachIndexed { index, segment ->
+                            control?.check()
                             var failure: Exception? = null
                             val checkpoint = stream.channel.position()
                             for (attempt in 1..3) {
@@ -44,12 +49,17 @@ class DashDownloader(private val context: Context) {
                                     stream.channel.truncate(checkpoint)
                                     stream.channel.position(checkpoint)
                                     stream.flush()
-                                    fetchTo(segment, agent, referer, cookie, stream)
+                                    fetchTo(segment, agent, referer, cookie, stream, control)
                                     failure = null
                                     break
-                                } catch (e: Exception) { failure = e }
+                                } catch (e: Exception) {
+                                    if (e is SegmentTaskQueue.Stopped) throw e
+                                    failure = e
+                                }
                             }
                             if (failure != null) error("${track.type} 片段 ${index + 1} 下载失败：${failure.message}")
+                            completedSegments++
+                            progress?.invoke((completedSegments * 90 / totalSegments).coerceAtMost(90), "${track.type} ${index + 1}/${track.urls.size}")
                         }
                     }
                     return output
@@ -58,7 +68,10 @@ class DashDownloader(private val context: Context) {
                 val a = retrieve(audio)
                 val merged = File.createTempFile("dash_mux_", ".mp4", context.cacheDir)
                 temps.add(merged)
+                control?.check()
+                progress?.invoke(92, "正在合并音视频")
                 mux(v, a, merged)
+                control?.check()
                 val values = ContentValues().apply {
                     put(MediaStore.Video.Media.DISPLAY_NAME, "hd_dash_${System.currentTimeMillis()}.mp4")
                     put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
@@ -84,9 +97,11 @@ class DashDownloader(private val context: Context) {
                 }
                 callback(true, "DASH 音视频已合并保存至 Movies/HDResourceExtractor")
             } catch (e: Exception) {
+                if (e is SegmentTaskQueue.Stopped) throw e
                 callback(false, "DASH 下载或合并失败：" + (e.message ?: "未知错误"))
             } finally { temps.forEach { it.delete() } }
-        }.start()
+        }
+        if (control == null) Thread { work() }.start() else work()
     }
 
     private fun fetch(raw: String, agent: String, referer: String, cookie: String): ByteArray {
@@ -104,7 +119,7 @@ class DashDownloader(private val context: Context) {
     }
 
     /** Stream segments to disk to avoid retaining large videos in RAM. */
-    private fun fetchTo(raw: String, agent: String, referer: String, cookie: String, output: FileOutputStream) {
+    private fun fetchTo(raw: String, agent: String, referer: String, cookie: String, output: FileOutputStream, control: SegmentTaskQueue.Control?) {
         val conn = URL(raw).openConnection() as HttpURLConnection
         try {
             conn.connectTimeout = 20000
@@ -118,6 +133,7 @@ class DashDownloader(private val context: Context) {
             conn.inputStream.use { input ->
                 val buffer = ByteArray(128 * 1024)
                 while (true) {
+                    control?.check()
                     val count = input.read(buffer)
                     if (count < 0) break
                     output.write(buffer, 0, count)
