@@ -15,13 +15,16 @@ class HlsDownloader(private val context: Context) {
         userAgent: String,
         referer: String,
         cookie: String,
-        callback: (Boolean, String) -> Unit
+        callback: (Boolean, String) -> Unit,
+        control: SegmentTaskQueue.Control? = null,
+        progress: ((Int, String) -> Unit)? = null
     ) {
-        Thread {
+        val work = {
             val prefs = context.getSharedPreferences("hls_download_progress", Context.MODE_PRIVATE)
             val key = "media_" + url.hashCode().toString()
             var target: android.net.Uri? = null
             try {
+                control?.check()
                 val segments = resolveSegments(url, userAgent, referer, cookie, 0)
                 val fmp4 = segments.firstOrNull()?.contains("__init_fmp4__") == true
                 val effectiveSegments = segments.map { it.replace("__init_fmp4__", "") }
@@ -67,6 +70,7 @@ class HlsDownloader(private val context: Context) {
                         output.channel.truncate(savedBytes)
                         output.channel.position(savedBytes)
                         effectiveSegments.forEachIndexed { index, segment ->
+                            control?.check()
                             if (index < savedIndex) return@forEachIndexed
                             val temp = java.io.File.createTempFile("hls_segment_", ".ts", context.cacheDir)
                             try {
@@ -79,13 +83,22 @@ class HlsDownloader(private val context: Context) {
                                                 error("片段 HTTP ${conn.responseCode}")
                                             }
                                             temp.outputStream().use { fileOutput ->
-                                                conn.inputStream.use { it.copyTo(fileOutput, 128 * 1024) }
+                                                conn.inputStream.use { input ->
+                                                    val buffer = ByteArray(128 * 1024)
+                                                    while (true) {
+                                                        control?.check()
+                                                        val count = input.read(buffer)
+                                                        if (count < 0) break
+                                                        fileOutput.write(buffer, 0, count)
+                                                    }
+                                                }
                                             }
                                             if (temp.length() <= 0) error("空片段")
                                             downloaded = true
                                             break
                                         } finally { conn.disconnect() }
                                     } catch (e: Exception) {
+                                        if (e is SegmentTaskQueue.Stopped) throw e
                                         temp.delete()
                                         if (attempt == 3) throw IllegalStateException(
                                             "片段 ${index + 1}/${effectiveSegments.size} 失败：" + e.message
@@ -96,6 +109,7 @@ class HlsDownloader(private val context: Context) {
                                 temp.inputStream().use { it.copyTo(output, 128 * 1024) }
                                 output.flush()
                                 savedBytes = output.channel.position()
+                                progress?.invoke(((index + 1) * 100 / effectiveSegments.size).coerceAtMost(99), "片段 ${index + 1}/${effectiveSegments.size}")
                                 prefs.edit()
                                     .putInt(key + "_index", index + 1)
                                     .putLong(key + "_bytes", savedBytes)
@@ -113,10 +127,12 @@ class HlsDownloader(private val context: Context) {
                     .remove(key + "_bytes").commit()
                 callback(true, "HLS 视频已保存至 Movies/HDResourceExtractor（TS 原始封装）")
             } catch (e: Exception) {
+                if (e is SegmentTaskQueue.Stopped) throw e
                 // Keep the pending file and segment position to resume on the next request.
                 callback(false, "HLS 下载中断：可再次点下载继续；" + (e.message ?: "未知错误"))
             }
-        }.start()
+        }
+        if (control == null) Thread { work() }.start() else work()
     }
 
     private fun resolveSegments(
