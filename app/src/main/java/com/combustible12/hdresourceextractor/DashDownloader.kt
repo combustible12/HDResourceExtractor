@@ -14,6 +14,7 @@ import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 import java.io.File
 import java.io.FileOutputStream
+import java.io.BufferedInputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.ByteBuffer
@@ -37,11 +38,13 @@ class DashDownloader(private val context: Context) {
                     FileOutputStream(output).use { stream ->
                         track.urls.forEachIndexed { index, segment ->
                             var failure: Exception? = null
+                            val checkpoint = stream.channel.position()
                             for (attempt in 1..3) {
                                 try {
-                                    val bytes = fetch(segment, agent, referer, cookie)
-                                    if (bytes.isEmpty()) error("空片段")
-                                    stream.write(bytes)
+                                    stream.channel.truncate(checkpoint)
+                                    stream.channel.position(checkpoint)
+                                    stream.flush()
+                                    fetchTo(segment, agent, referer, cookie, stream)
                                     failure = null
                                     break
                                 } catch (e: Exception) { failure = e }
@@ -100,12 +103,37 @@ class DashDownloader(private val context: Context) {
         } finally { conn.disconnect() }
     }
 
+    /** Stream segments to disk to avoid retaining large videos in RAM. */
+    private fun fetchTo(raw: String, agent: String, referer: String, cookie: String, output: FileOutputStream) {
+        val conn = URL(raw).openConnection() as HttpURLConnection
+        try {
+            conn.connectTimeout = 20000
+            conn.readTimeout = 60000
+            conn.setRequestProperty("Accept-Encoding", "identity")
+            if (agent.isNotBlank()) conn.setRequestProperty("User-Agent", agent)
+            if (referer.isNotBlank()) conn.setRequestProperty("Referer", referer)
+            if (cookie.isNotBlank()) conn.setRequestProperty("Cookie", cookie)
+            if (conn.responseCode !in 200..299) error("HTTP ${conn.responseCode}")
+            var bytes = 0L
+            conn.inputStream.use { input ->
+                val buffer = ByteArray(128 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    bytes += count
+                }
+            }
+            if (bytes == 0L) error("空片段")
+        } finally { conn.disconnect() }
+    }
+
     private fun parse(manifest: String, xml: String): List<Track> {
         if (xml.contains("ContentProtection", ignoreCase = true)) error("不支持 DRM 加密 DASH")
+        if (xml.length > 5_000_000) error("MPD 清单过大")
         val parser = XmlPullParserFactory.newInstance().apply { isNamespaceAware = true }.newPullParser()
         parser.setInput(xml.reader())
         val tracks = mutableListOf<Track>()
-        val bases = mutableListOf<String>()
         var adaptationType = ""
         var representationType = ""
         var bandwidth = 0L
@@ -113,6 +141,7 @@ class DashDownloader(private val context: Context) {
         val media = mutableListOf<String>()
         var depth = 0
         var repDepth = -1
+        var inSegmentList = false
         var baseText = false
         var repBase = ""
         var adaptationBase = ""
@@ -137,8 +166,9 @@ class DashDownloader(private val context: Context) {
                             media.clear()
                         }
                         "BaseURL" -> baseText = true
-                        "Initialization" -> if (repDepth > 0) init = parser.getAttributeValue(null, "sourceURL").orEmpty()
-                        "SegmentURL" -> if (repDepth > 0) {
+                        "SegmentList" -> inSegmentList = true
+                        "Initialization" -> if (repDepth > 0 && inSegmentList) init = parser.getAttributeValue(null, "sourceURL").orEmpty()
+                        "SegmentURL" -> if (repDepth > 0 && inSegmentList) {
                             val part = parser.getAttributeValue(null, "media").orEmpty()
                             if (part.isNotBlank()) media.add(part)
                         }
@@ -156,6 +186,7 @@ class DashDownloader(private val context: Context) {
                 XmlPullParser.END_TAG -> {
                     when (parser.name.substringAfter(':')) {
                         "BaseURL" -> baseText = false
+                        "SegmentList" -> inSegmentList = false
                         "Representation" -> {
                             if (init.isNotBlank() && media.isNotEmpty() && representationType in listOf("video", "audio")) {
                                 val urls = (listOf(init) + media).map { URL(URL(repBase), it).toString() }
@@ -190,7 +221,7 @@ class DashDownloader(private val context: Context) {
                 muxer.addTrack(extractor.getTrackFormat(indexes[i]))
             }
             muxer.start()
-            val buffer = ByteBuffer.allocateDirect(4 * 1024 * 1024)
+            val buffer = ByteBuffer.allocateDirect(16 * 1024 * 1024)
             val info = MediaCodec.BufferInfo()
             extractors.forEachIndexed { i, extractor ->
                 extractor.selectTrack(indexes[i])
