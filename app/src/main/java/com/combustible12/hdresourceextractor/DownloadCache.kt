@@ -35,6 +35,11 @@ object DownloadCache {
         val metaFile = File(target.path + ".json")
         val identity = ResourceIdentity.hash(url + "|" + range.orEmpty())
         var meta = json(metaFile)
+        if (!meta.optBoolean("complete") && meta.optString("identity") == identity && target.exists() &&
+            meta.optLong("bytes", -1) in 0..target.length()) {
+            // Discard only bytes written after the last durable checkpoint.
+            RandomAccessFile(target, "rw").use { it.setLength(meta.optLong("bytes")) }
+        }
         if (meta.optString("identity") != identity || !target.exists() || meta.optLong("bytes") != target.length() ||
             meta.optString("sha256").isEmpty() || digest(target) != meta.optString("sha256")) {
             target.delete(); meta = JSONObject()
@@ -88,6 +93,12 @@ object DownloadCache {
                 }
                 RandomAccessFile(target, "rw").use { out ->
                     out.setLength(offset); out.seek(offset)
+                    val hasher = java.security.MessageDigest.getInstance("SHA-256")
+                    if (offset > 0) target.inputStream().use { old ->
+                        val b = ByteArray(128 * 1024)
+                        while (true) { control?.check(); val n = old.read(b); if (n < 0) break; hasher.update(b, 0, n) }
+                    }
+                    var checkpointAt = android.os.SystemClock.elapsedRealtime()
                     conn.inputStream.use { input ->
                         if (code != 206 && start > 0) {
                             var skip = start
@@ -101,7 +112,15 @@ object DownloadCache {
                             control?.check()
                             val count = input.read(buffer, 0, if (limit < 0) buffer.size else minOf(buffer.size.toLong(), limit - received).toInt())
                             if (count < 0) break
-                            out.write(buffer, 0, count); received += count
+                            out.write(buffer, 0, count); hasher.update(buffer, 0, count); received += count
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            if (now - checkpointAt >= 2000) {
+                                out.fd.sync()
+                                val hash = runCatching { (hasher.clone() as java.security.MessageDigest).digest().joinToString("") { "%02x".format(it) } }.getOrElse { digest(target) }
+                                write(metaFile, JSONObject().put("identity", identity).put("bytes", out.length())
+                                    .put("validator", validator).put("sha256", hash).put("complete", false))
+                                checkpointAt = now
+                            }
                             progress?.invoke(offset + received, total)
                         }
                         if (limit >= 0 && received != limit) error("响应提前结束")

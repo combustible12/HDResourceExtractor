@@ -22,7 +22,7 @@ class AppUpdater(context: Context) {
         onMessage("正在检查新版本…")
         Thread {
             try {
-                if (recoverPendingUpdate(onMessage, true)) return@Thread
+                if (recoverPendingUpdate(true, onMessage)) return@Thread
                 val conn = (URL("https://api.github.com/repos/combustible12/HDResourceExtractor/releases/latest").openConnection() as HttpURLConnection).apply {
                     connectTimeout = 15000; readTimeout = 20000
                     setRequestProperty("Accept", "application/vnd.github+json")
@@ -50,7 +50,7 @@ class AppUpdater(context: Context) {
             finally { checking.set(false) }
         }.start()
     }
-    fun recoverPendingUpdate(onMessage: (String) -> Unit, force: Boolean = false): Boolean {
+    fun recoverPendingUpdate(force: Boolean = false, onMessage: (String) -> Unit): Boolean {
         val id = prefs.getLong("download_id", -1)
         if (id <= 0) return false
         val installed = app.packageManager.getPackageInfo(app.packageName, 0).versionName.orEmpty()
@@ -99,7 +99,7 @@ class AppUpdater(context: Context) {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 if (intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) != id) return
                 runCatching { app.unregisterReceiver(this) }
-                try { recoverPendingUpdate(onMessage, true) }
+                try { recoverPendingUpdate(true, onMessage) }
                 catch (e: Exception) { onMessage("更新下载完成，请再次点击升级：${e.message}") }
             }
         }
