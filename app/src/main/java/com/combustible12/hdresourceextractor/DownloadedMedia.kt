@@ -11,7 +11,11 @@ class DownloadedMedia(private val context: Context) {
     private val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
 
     private fun key(url: String): String {
-        val hash = MessageDigest.getInstance("SHA-256").digest(url.trim().toByteArray())
+        val uri = Uri.parse(url)
+                val host = uri.host.orEmpty().lowercase(java.util.Locale.US)
+                val signatureHosts = host.endsWith(".xhscdn.com") || host == "ci.xiaohongshu.com"
+                val normalized = if (signatureHosts) uri.buildUpon().clearQuery().fragment(null).build().toString().substringBefore("!") else url.trim()
+                val hash = MessageDigest.getInstance("SHA-256").digest(normalized.toByteArray())
         return hash.joinToString("") { "%02x".format(it) }
     }
 
