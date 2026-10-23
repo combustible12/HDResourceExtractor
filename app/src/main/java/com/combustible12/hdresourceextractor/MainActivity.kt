@@ -1174,8 +1174,22 @@ class MainActivity : AppCompatActivity() {
         }
 
         val path = url.substringBefore('?').substringBefore('#').lowercase(Locale.US)
-        if (path.endsWith(".m3u8") || path.endsWith(".mpd")) {
-            val warning = "分段播放列表不能直接保存为视频；需要媒体片段合并"
+        if (path.endsWith(".m3u8")) {
+            HlsDownloader(this).download(
+                url = url,
+                userAgent = webView.settings.userAgentString.orEmpty(),
+                referer = currentPageUrl,
+                cookie = CookieManager.getInstance().getCookie(url).orEmpty()
+            ) { success, message ->
+                runOnUiThread {
+                    statusText.text = message
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                }
+            }
+            return true
+        }
+        if (path.endsWith(".mpd")) {
+            val warning = "DASH 分段视频尚不支持直接合并"
             statusText.text = warning
             if (showToast) Toast.makeText(this, warning, Toast.LENGTH_LONG).show()
             return false
