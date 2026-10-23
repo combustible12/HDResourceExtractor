@@ -1,13 +1,11 @@
 package com.combustible12.hdresourceextractor
 
-import com.sun.net.httpserver.HttpServer
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
-import java.net.InetSocketAddress
 import java.util.concurrent.CopyOnWriteArrayList
 
 @RunWith(RobolectricTestRunner::class)
@@ -16,20 +14,16 @@ class TransferRecoveryTest {
     private val payload = ByteArray(1024 * 1024) { (it % 251).toByte() }
     private fun server(ignoreRange: Boolean = false, test: (String, CopyOnWriteArrayList<String>) -> Unit) {
         val ranges = CopyOnWriteArrayList<String>()
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.createContext("/file") { exchange ->
-            val range = exchange.requestHeaders.getFirst("Range").orEmpty(); ranges.add(range)
-            exchange.responseHeaders.add("ETag", "\"v1\"")
+        val server = TestHttpServer { headers ->
+            val range = headers["range"].orEmpty(); ranges.add(range)
             val bounds = Regex("bytes=(\\d+)-(\\d*)").matchEntire(range)
             val start = if (ignoreRange || bounds == null) 0 else bounds.groupValues[1].toInt()
             val end = if (ignoreRange || bounds == null) payload.lastIndex else bounds.groupValues[2].toIntOrNull() ?: payload.lastIndex
-            if (!ignoreRange && bounds != null) exchange.responseHeaders.add("Content-Range", "bytes $start-$end/${payload.size}")
-            exchange.sendResponseHeaders(if (!ignoreRange && bounds != null) 206 else 200, (end - start + 1).toLong())
-            runCatching { exchange.responseBody.use { it.write(payload, start, end - start + 1) } }
-            exchange.close()
+            val responseHeaders = mutableMapOf("ETag" to "\"v1\"")
+            if (!ignoreRange && bounds != null) responseHeaders["Content-Range"] = "bytes $start-$end/${payload.size}"
+            TestHttpServer.Response(if (!ignoreRange && bounds != null) 206 else 200, responseHeaders, payload.copyOfRange(start, end + 1))
         }
-        server.start()
-        try { test("http://127.0.0.1:${server.address.port}/file", ranges) } finally { server.stop(0) }
+        server.use { test(it.url, ranges) }
     }
     private fun target(): File = File.createTempFile("transfer", ".bin").apply { delete(); deleteOnExit() }
     @Test fun interruptThenResumeUsesValidatedOffset() = server { url, ranges ->

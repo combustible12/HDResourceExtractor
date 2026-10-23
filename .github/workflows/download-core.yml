@@ -4,6 +4,9 @@ on:
     branches: [work/download-core, main]
     paths: ['app/**', '.github/workflows/download-core.yml']
   workflow_dispatch:
+concurrency:
+  group: download-core-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:

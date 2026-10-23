@@ -7,7 +7,7 @@ import java.net.URL
 /** Clear static MPD: inherited addressing, byte ranges and per-Period track selection. */
 class DashDownloader(private val context: Context) {
     data class Track(val type: String, val bandwidth: Long, val urls: List<String>, val period: Int = 0,
-        val codecs: String = "", val mime: String = "")
+        val codecs: String = "", val mime: String = "", val timeOffsetUs: Long = 0L)
     fun download(url: String, agent: String, referer: String, cookie: String, callback: (Boolean, String) -> Unit,
         control: SegmentTaskQueue.Control? = null, progress: ((Int, String) -> Unit)? = null) {
         val work = {
@@ -45,7 +45,7 @@ class DashDownloader(private val context: Context) {
                     progress?.invoke(90, "正在合并音视频")
                     val merged = File(dir, "merged")
                     val webm = selected.flatten().any { it.mime.contains("webm") || it.codecs.startsWith("vp") || it.codecs.startsWith("av01") }
-                    MediaJoiner.join(periods, merged, webm, control)
+                    MediaJoiner.join(periods, merged, webm, control, selected.map { group -> group.associate { it.type to it.timeOffsetUs } })
                     MediaPublisher.save(context, url, merged, "hd_dash_${System.currentTimeMillis()}." + if (webm) "webm" else "mp4",
                         if (webm) "video/webm" else "video/mp4", control)
                     DownloadCache.clear(context, url)
@@ -190,8 +190,16 @@ class DashDownloader(private val context: Context) {
                     // A complete ISO-BMFF/WebM representation can be downloaded without parsing SIDX.
                     urls.add(repBase)
                 }
+                val addressing = when (mode) {
+                    "SegmentTemplate" -> templates
+                    "SegmentList" -> lists
+                    "SegmentBase" -> inherited(hierarchy, "SegmentBase")
+                    else -> emptyList()
+                }
+                val scale = (attr(addressing, "timescale", "1").toLongOrNull() ?: 1L).coerceAtLeast(1)
+                val presentationOffset = attr(addressing, "presentationTimeOffset", "0").toLongOrNull() ?: 0L
                 if (urls.isNotEmpty()) tracks.add(Track(type, bandwidth, urls, periodIndex,
-                    attr(hierarchy, "codecs"), attr(hierarchy, "mimeType")))
+                    attr(hierarchy, "codecs"), attr(hierarchy, "mimeType"), (presentationOffset.toDouble() * 1_000_000 / scale).toLong()))
             }
         }
         }

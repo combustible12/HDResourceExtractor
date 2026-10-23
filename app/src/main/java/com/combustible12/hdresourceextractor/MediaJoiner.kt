@@ -9,7 +9,7 @@ import java.nio.ByteBuffer
 
 /** Shared origin preserves A/V skew. Each period appends at the prior period's end. */
 object MediaJoiner {
-    fun join(periods: List<Map<String, File>>, destination: File, webm: Boolean, control: SegmentTaskQueue.Control?) {
+    fun join(periods: List<Map<String, File>>, destination: File, webm: Boolean, control: SegmentTaskQueue.Control?, timeOffsets: List<Map<String, Long>> = emptyList()) {
         destination.delete()
         val writer = MediaMuxer(destination.path, if (webm) MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM else MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         val formats = mutableMapOf<String, MediaFormat>()
@@ -18,7 +18,7 @@ object MediaJoiner {
         var started = false
         var offset = 0L
         try {
-            for (period in periods) {
+            for ((periodIndex, period) in periods.withIndex()) {
                 val readers = mutableMapOf<String, MediaExtractor>()
                 try {
                     for ((type, file) in period) {
@@ -33,7 +33,9 @@ object MediaJoiner {
                     }
                     if (!started) { writer.start(); started = true }
                     require(readers.keys == outputs.keys) { "Period 音视频轨道数量发生变化" }
-                    val origin = readers.values.map { it.sampleTime }.filter { it >= 0 }.minOrNull() ?: error("媒体没有样本")
+                    val shifts = timeOffsets.getOrNull(periodIndex).orEmpty()
+                    val origin = readers.entries.filter { it.value.sampleTime >= 0 }
+                        .minOfOrNull { (type, ex) -> ex.sampleTime - (shifts[type] ?: 0L) } ?: error("媒体没有样本")
                     var periodEnd = offset
                     val done = mutableSetOf<String>()
                     val steps = mutableMapOf<String, Long>()
@@ -44,7 +46,7 @@ object MediaJoiner {
                     while (done.size < readers.size) {
                         control?.check()
                         val type = readers.keys.filter { it !in done }.minByOrNull { type ->
-                            readers.getValue(type).sampleTime.let { if (it < 0) Long.MAX_VALUE else it }
+                            readers.getValue(type).sampleTime.let { if (it < 0) Long.MAX_VALUE else it - (shifts[type] ?: 0L) }
                         } ?: break
                         val ex = readers.getValue(type)
                         val raw = ex.sampleTime
@@ -63,7 +65,7 @@ object MediaJoiner {
                         corrections[type] = correction
                         if (prev != null && raw > prev && raw - prev < 1_000_000L) steps[type] = raw - prev
                         rawLast[type] = raw
-                        val pts = (offset + raw - origin + correction).coerceAtLeast(offset)
+                        val pts = (offset + raw - (shifts[type] ?: 0L) - origin + correction).coerceAtLeast(offset)
                         // WebM requires monotonically increasing timestamps.
                         val time = if (webm) maxOf(pts, (last[type] ?: -1) + 1) else pts
                         last[type] = time

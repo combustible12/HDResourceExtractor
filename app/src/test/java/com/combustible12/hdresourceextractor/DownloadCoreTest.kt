@@ -34,6 +34,7 @@ class DownloadCoreTest {
             <SegmentTemplate initialization="init" media="${d}Time${d}" timescale="1" presentationTimeOffset="10">
             <SegmentTimeline><S t="10" d="2" r="-1"/></SegmentTimeline></SegmentTemplate>
             </Representation></AdaptationSet></Period></MPD>""")
+        assertEquals(10_000_000L, tracks.single().timeOffsetUs)
         assertEquals(listOf("https://example.com/path/init", "https://example.com/path/10", "https://example.com/path/12"), tracks.single().urls)
     }
     @Test fun identityRetainsContentSelectingQuery() {

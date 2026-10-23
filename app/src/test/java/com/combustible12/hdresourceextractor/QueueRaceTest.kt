@@ -1,13 +1,11 @@
 package com.combustible12.hdresourceextractor
 
-import com.sun.net.httpserver.HttpServer
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
-import java.net.InetSocketAddress
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -22,16 +20,13 @@ class QueueRaceTest {
         val requests = AtomicInteger()
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.createContext("/file") { exchange ->
+        val server = TestHttpServer {
             requests.incrementAndGet(); entered.countDown()
             release.await(5, TimeUnit.SECONDS)
-            runCatching { exchange.sendResponseHeaders(200, 3); exchange.responseBody.use { it.write(byteArrayOf(1, 2, 3)) } }
-            exchange.close()
+            TestHttpServer.Response(200, body = byteArrayOf(1, 2, 3))
         }
-        server.start()
         try {
-            val task = store.add("http://127.0.0.1:${server.address.port}/file", "FILE", name = "file.mp4")
+            val task = store.add(server.url, "FILE", name = "file.mp4")
             queue.start(task.id)
             assertTrue(entered.await(5, TimeUnit.SECONDS))
             queue.pause(task.id); queue.resume(task.id); queue.cancel(task.id)
@@ -43,6 +38,6 @@ class QueueRaceTest {
             assertFalse(queue.resume(task.id)); queue.recover()
             Thread.sleep(100)
             assertEquals(before, requests.get()); assertEquals("cancelled", store.get(task.id)?.status)
-        } finally { release.countDown(); server.stop(0) }
+        } finally { release.countDown(); server.close() }
     }
 }
