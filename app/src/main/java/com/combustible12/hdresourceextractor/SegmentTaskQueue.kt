@@ -47,6 +47,7 @@ class SegmentTaskQueue private constructor(context: Context) {
         }
     }
 
+    fun isActive(id: String): Boolean = controls.containsKey(id)
     fun pause(id: String) {
         val control = controls[id]
         if (control != null) {
