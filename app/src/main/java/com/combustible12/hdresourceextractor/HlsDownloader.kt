@@ -128,6 +128,9 @@ class HlsDownloader(private val context: Context) {
             if (conn.responseCode !in 200..299) error("播放列表 HTTP ${conn.responseCode}")
             conn.inputStream.bufferedReader().use { it.readText() }
         } finally { conn.disconnect() }
+        if (body.trimStart().startsWith("<") && body.contains("<MPD")) {
+            return resolveDashSegmentList(raw, body)
+        }
         if (!body.trimStart().startsWith("#EXTM3U")) error("并非有效 HLS 播放列表")
         if (body.contains("#EXT-X-KEY") || body.contains("#EXT-X-SESSION-KEY")) {
             error("加密 HLS 暂不支持")
@@ -166,4 +169,63 @@ class HlsDownloader(private val context: Context) {
             if (referer.isNotBlank()) setRequestProperty("Referer", referer)
             if (cookie.isNotBlank()) setRequestProperty("Cookie", cookie)
         }
+    /** Supports clear DASH VOD SegmentList MP4 representations, not DRM or SegmentTemplate. */
+    private fun resolveDashSegmentList(manifestUrl: String, xml: String): List<String> {
+        if (xml.contains("ContentProtection", true)) error("DRM DASH 暂不支持")
+        val factory = org.xmlpull.v1.XmlPullParserFactory.newInstance()
+        factory.isNamespaceAware = true
+        val parser = factory.newPullParser()
+        parser.setInput(xml.reader())
+        val representations = mutableListOf<Pair<Long, List<String>>>()
+        var bandwidth = 0L
+        var baseUrl = manifestUrl
+        var init = ""
+        val segments = mutableListOf<String>()
+        var inRepresentation = false
+        var inBase = false
+        var inSegmentList = false
+        var event = parser.eventType
+        while (event != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+            if (event == org.xmlpull.v1.XmlPullParser.START_TAG) {
+                when (parser.name.substringAfter(':')) {
+                    "Representation" -> {
+                        inRepresentation = true
+                        bandwidth = parser.getAttributeValue(null, "bandwidth")?.toLongOrNull() ?: 0L
+                        baseUrl = manifestUrl
+                        init = ""
+                        segments.clear()
+                    }
+                    "BaseURL" -> if (inRepresentation) inBase = true
+                    "SegmentList" -> if (inRepresentation) inSegmentList = true
+                    "Initialization" -> if (inRepresentation && inSegmentList) {
+                        init = parser.getAttributeValue(null, "sourceURL").orEmpty()
+                    }
+                    "SegmentURL" -> if (inRepresentation && inSegmentList) {
+                        val media = parser.getAttributeValue(null, "media").orEmpty()
+                        if (media.isNotBlank()) segments.add(media)
+                    }
+                }
+            } else if (event == org.xmlpull.v1.XmlPullParser.TEXT && inBase) {
+                val value = parser.text?.trim().orEmpty()
+                if (value.isNotBlank()) baseUrl = URL(URL(manifestUrl), value).toString()
+            } else if (event == org.xmlpull.v1.XmlPullParser.END_TAG) {
+                when (parser.name.substringAfter(':')) {
+                    "BaseURL" -> inBase = false
+                    "SegmentList" -> inSegmentList = false
+                    "Representation" -> {
+                        if (init.isNotBlank() && segments.isNotEmpty()) {
+                            val resolved = listOf(URL(URL(baseUrl), init).toString() + "__init_fmp4__") +
+                                segments.map { URL(URL(baseUrl), it).toString() }
+                            representations.add(bandwidth to resolved)
+                        }
+                        inRepresentation = false
+                    }
+                }
+            }
+            event = parser.next()
+        }
+        return representations.maxByOrNull { it.first }?.second
+            ?: error("此 DASH 使用不支持的 SegmentTemplate 或缺少片段地址")
+    }
+
 }
