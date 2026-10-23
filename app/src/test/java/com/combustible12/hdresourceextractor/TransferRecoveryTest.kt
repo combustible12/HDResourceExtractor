@@ -42,6 +42,24 @@ class TransferRecoveryTest {
         DownloadCache.fetch(url, file, "", "", "", null, "100-399")
         assertArrayEquals(payload.copyOfRange(100, 400), file.readBytes())
     }
+    @Test fun ignoredRangeDuringOrdinaryResumeDoesNotAppendDuplicateBytes() = server(ignoreRange = true) { url, _ ->
+        val file = target(); val first = SegmentTaskQueue.Control()
+        try { DownloadCache.fetch(url, file, "", "", "", first, progress = { done, _ ->
+            if (done >= 131072) { first.paused.set(true); first.check() }
+        }) } catch (_: SegmentTaskQueue.Stopped) { }
+        DownloadCache.fetch(url, file, "", "", "", SegmentTaskQueue.Control())
+        assertArrayEquals(payload, file.readBytes())
+    }
+    @Test fun restartDiscardsOnlyUncheckpointedTail() = server { url, ranges ->
+        val file = target().apply { writeBytes(payload.copyOfRange(0, 131072)) }
+        DownloadCache.write(File(file.path + ".json"), org.json.JSONObject()
+            .put("identity", ResourceIdentity.hash(url + "|"))
+            .put("bytes", file.length()).put("validator", "\"v1\"")
+            .put("sha256", DownloadCache.digest(file)).put("complete", false))
+        file.appendBytes(byteArrayOf(9, 9, 9))
+        DownloadCache.fetch(url, file, "", "", "", SegmentTaskQueue.Control())
+        assertEquals("bytes=131072-", ranges.last()); assertArrayEquals(payload, file.readBytes())
+    }
     @Test fun corruptCompletedCacheIsDownloadedAgain() = server { url, ranges ->
         val file = target()
         DownloadCache.fetch(url, file, "", "", "", null)

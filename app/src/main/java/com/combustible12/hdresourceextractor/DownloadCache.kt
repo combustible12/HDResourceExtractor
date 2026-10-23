@@ -10,9 +10,18 @@ import org.json.JSONObject
 /** Persistent files, atomic sidecars and SHA-256 validation; never trust file length alone. */
 object DownloadCache {
     fun dir(context: Context, url: String): File = File(context.filesDir, "downloads/${ResourceIdentity.of(url)}").apply { mkdirs() }
-    fun clear(context: Context, url: String) { dir(context, url).deleteRecursively() }
+    fun clear(context: Context, url: String) { dir(context, url).deleteRecursively(); clearPending(context, ResourceIdentity.of(url)) }
+    private fun clearPending(context: Context, identity: String) {
+        val prefs = context.getSharedPreferences("saved_resources", Context.MODE_PRIVATE)
+        val key = "pending_$identity"
+        prefs.getString(key, null)?.let { uri -> runCatching { context.contentResolver.delete(android.net.Uri.parse(uri), null, null) } }
+        prefs.edit().remove(key).commit()
+    }
     fun clean(context: Context, retained: Set<String>) {
         File(context.filesDir, "downloads").listFiles()?.filter { it.name !in retained }?.forEach { it.deleteRecursively() }
+        val prefs = context.getSharedPreferences("saved_resources", Context.MODE_PRIVATE)
+        prefs.all.keys.filter { it.startsWith("pending_") && it.removePrefix("pending_") !in retained }
+            .forEach { clearPending(context, it.removePrefix("pending_")) }
         context.cacheDir.listFiles()?.filter { it.name.startsWith("dash_mux_") || it.name.startsWith("hls_segment_") }?.forEach { it.delete() }
     }
     fun digest(file: File): String {

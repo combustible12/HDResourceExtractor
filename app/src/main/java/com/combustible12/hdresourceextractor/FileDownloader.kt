@@ -40,38 +40,45 @@ object MediaPublisher {
     @Synchronized fun save(context: Context, url: String, file: File, name: String, mime: String, c: SegmentTaskQueue.Control?) {
         val prefs = context.getSharedPreferences("saved_resources", Context.MODE_PRIVATE)
         val key = ResourceIdentity.of(url)
-        val hash = DownloadCache.digest(file)
-        val work = {
-            c?.check()
-            if (!prefs.contains(key)) {
-                val resolver = context.contentResolver
-                val pendingKey = "pending_$key"
-                prefs.getString(pendingKey, null)?.let { runCatching { resolver.delete(Uri.parse(it), null, null) } }
-                if (!prefs.contains("content_$hash")) {
-                    val video = mime.startsWith("video/") || mime.startsWith("audio/")
-                    val values = ContentValues().apply {
-                        put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-                        put(MediaStore.MediaColumns.MIME_TYPE, mime)
-                        if (Build.VERSION.SDK_INT >= 29) {
-                            put(MediaStore.MediaColumns.RELATIVE_PATH, (if (video) "Movies" else if (mime.startsWith("image/")) "Pictures" else "Download") + "/HDResourceExtractor")
-                            put(MediaStore.MediaColumns.IS_PENDING, 1)
-                        }
-                    }
-                    val collection = if (Build.VERSION.SDK_INT >= 29 && !video && !mime.startsWith("image/")) MediaStore.Downloads.EXTERNAL_CONTENT_URI else if (video) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-                    val uri = resolver.insert(collection, values) ?: error("无法创建输出文件")
-                    check(prefs.edit().putString(pendingKey, uri.toString()).commit())
-                    try {
-                        resolver.openOutputStream(uri)?.use { out -> file.inputStream().use { input ->
-                            val b = ByteArray(128 * 1024)
-                            while (true) { c?.check(); val n = input.read(b); if (n < 0) break; out.write(b, 0, n) }
-                        } } ?: error("无法写入输出文件")
-                        if (Build.VERSION.SDK_INT >= 29) resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
-                        check(prefs.edit().putString(key, uri.toString()).putString("content_$hash", uri.toString()).remove(pendingKey).commit())
-                    } catch (e: Exception) { resolver.delete(uri, null, null); prefs.edit().remove(pendingKey).commit(); throw e }
-                } else check(prefs.edit().putString(key, prefs.getString("content_$hash", "")).remove(pendingKey).commit())
-            }
-            c?.committed = true
+        fun finish(action: () -> Unit) {
+            val work = { c?.check(); action(); c?.committed = true }
+            if (c == null) work() else synchronized(c) { work() }
         }
-        if (c == null) work() else synchronized(c) { work() }
+        c?.check()
+        if (prefs.contains(key)) { finish { }; return }
+        val hash = DownloadCache.digest(file)
+        c?.check()
+        if (prefs.contains("content_$hash")) {
+            finish { check(prefs.edit().putString(key, prefs.getString("content_$hash", "")).commit()) }
+            return
+        }
+        val resolver = context.contentResolver
+        val pendingKey = "pending_$key"
+        prefs.getString(pendingKey, null)?.let { runCatching { resolver.delete(Uri.parse(it), null, null) } }
+        val video = mime.startsWith("video/") || mime.startsWith("audio/")
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
+            if (Build.VERSION.SDK_INT >= 29) {
+                put(MediaStore.MediaColumns.RELATIVE_PATH, (if (video) "Movies" else if (mime.startsWith("image/")) "Pictures" else "Download") + "/HDResourceExtractor")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+        }
+        val collection = if (Build.VERSION.SDK_INT >= 29 && !video && !mime.startsWith("image/")) MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            else if (video) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        c?.check()
+        val uri = resolver.insert(collection, values) ?: error("无法创建输出文件")
+        check(prefs.edit().putString(pendingKey, uri.toString()).commit())
+        try {
+            // Do not hold the control lock during a large copy: pause/cancel must remain responsive.
+            resolver.openOutputStream(uri)?.use { out -> file.inputStream().use { input ->
+                val b = ByteArray(128 * 1024)
+                while (true) { c?.check(); val n = input.read(b); if (n < 0) break; out.write(b, 0, n) }
+            } } ?: error("无法写入输出文件")
+            finish {
+                if (Build.VERSION.SDK_INT >= 29) resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+                check(prefs.edit().putString(key, uri.toString()).putString("content_$hash", uri.toString()).remove(pendingKey).commit())
+            }
+        } catch (e: Exception) { resolver.delete(uri, null, null); prefs.edit().remove(pendingKey).commit(); throw e }
     }
 }
