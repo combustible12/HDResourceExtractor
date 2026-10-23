@@ -75,6 +75,7 @@ class MainActivity : AppCompatActivity() {
         buildUi()
         configureWebView()
         AppUpdater(this).recoverPendingUpdate { message -> runOnUiThread { statusText.text = message } }
+        HlsDownloader(this).resumePending { _, message -> runOnUiThread { statusText.text = message; renderResults() } }
         handleIncomingIntent(intent)
     }
 
