@@ -39,8 +39,10 @@ class DownloadTaskStore(context: Context) {
         check(tasks.none { ResourceIdentity.of(it.url) == identity && it.status !in listOf("failed", "cancelled") }) {
             if (tasks.any { ResourceIdentity.of(it.url) == identity && it.status == "completed" }) "此资源已下载保存" else "此资源已在下载任务中"
         }
-        val task = Task(java.util.UUID.randomUUID().toString(), url, kind, "queued", systemId = systemId,
+        val old = tasks.lastOrNull { ResourceIdentity.of(it.url) == identity && it.status in listOf("failed", "cancelled") }
+        val task = Task(old?.id ?: java.util.UUID.randomUUID().toString(), url, kind, "queued", systemId = systemId,
             agent = agent, referer = referer, cookie = cookie, name = name)
+        if (old != null) tasks.remove(old)
         tasks.add(task); save(tasks); task
     }
     fun update(id: String, status: String, progress: Int? = null, detail: String = "", output: String? = null) = synchronized(lock) {

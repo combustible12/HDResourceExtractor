@@ -7,9 +7,11 @@ import android.os.*
 
 /** Foreground execution survives Activity destruction; durable jobs recover reclaimed processes. */
 class DownloadService : Service() {
+    private var wakeLock: PowerManager.WakeLock? = null
     private val handler = Handler(Looper.getMainLooper())
     private val tick = object : Runnable {
         override fun run() {
+            SegmentTaskQueue.get(this@DownloadService).recover()
             val tasks = DownloadTaskStore(this@DownloadService).all()
             val active = tasks.filter { it.kind != "SYSTEM" && it.status in listOf("queued", "running") }
             if (active.isEmpty()) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); return }
@@ -19,6 +21,8 @@ class DownloadService : Service() {
     }
     override fun onCreate() {
         super.onCreate()
+        running = true
+        wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:downloads").apply { acquire(6 * 60 * 60 * 1000L) }
         if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel("downloads", "下载任务", NotificationManager.IMPORTANCE_LOW))
         startForeground(210, notification("正在恢复下载任务"))
@@ -36,12 +40,14 @@ class DownloadService : Service() {
         return START_STICKY
     }
     override fun onBind(intent: Intent?) = null
-    override fun onDestroy() { handler.removeCallbacksAndMessages(null); super.onDestroy() }
+    override fun onDestroy() { running = false; handler.removeCallbacksAndMessages(null); wakeLock?.let { if (it.isHeld) it.release() }; super.onDestroy() }
     override fun onTimeout(startId: Int, fgsType: Int) {
         SegmentTaskQueue.get(this).suspendForSystem()
         schedule(this); stopSelf()
     }
     companion object {
+        @Volatile var running = false
+            private set
         fun start(context: Context) {
             val app = context.applicationContext
             schedule(app)
@@ -67,6 +73,7 @@ class DownloadRecoveryJob : JobService() {
         }
     }
     override fun onStartJob(params: JobParameters): Boolean {
+        if (DownloadService.running) return false
         current = params
         SegmentTaskQueue.get(this).recover()
         handler.post(poll)
@@ -74,7 +81,7 @@ class DownloadRecoveryJob : JobService() {
     }
     override fun onStopJob(params: JobParameters): Boolean {
         current = null; handler.removeCallbacksAndMessages(null)
-        SegmentTaskQueue.get(this).suspendForSystem()
+        if (!DownloadService.running) SegmentTaskQueue.get(this).suspendForSystem()
         return true
     }
 }

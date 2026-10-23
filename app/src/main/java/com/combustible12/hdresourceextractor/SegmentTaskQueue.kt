@@ -31,14 +31,22 @@ class SegmentTaskQueue private constructor(context: Context) {
         if (controls.containsKey(id)) return
         val task = store.get(id) ?: return
         if (task.status !in listOf("queued", "running", "paused", "failed", "interrupted")) return
+        if (controls.keys.any { key -> store.get(key)?.url?.let { ResourceIdentity.of(it) } == ResourceIdentity.of(task.url) }) return
         val c = Control(); controls[id] = c
         store.update(id, "queued", detail = "排队等待")
         executor.execute {
             try {
                 c.check()
                 synchronized(this) { c.check(); store.update(id, "running", detail = "正在下载") }
+                var lastUpdate = 0L
+                var lastPercent = -1
                 val progress: (Int, String) -> Unit = { percent, detail -> synchronized(this) {
-                    c.check(); store.update(id, "running", percent.coerceIn(0, 99), detail)
+                    c.check()
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (percent != lastPercent || now - lastUpdate >= 1000) {
+                        store.update(id, "running", percent.coerceIn(0, 99), detail)
+                        lastUpdate = now; lastPercent = percent
+                    }
                 } }
                 val done: (Boolean, String) -> Unit = { ok, message -> if (!ok) error(message) }
                 when (task.kind) {
