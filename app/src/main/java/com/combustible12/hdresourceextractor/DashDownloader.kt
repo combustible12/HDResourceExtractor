@@ -69,10 +69,9 @@ class DashDownloader(private val context: Context) {
                             val checkpoint = raf.filePointer
                             for (attempt in 1..3) {
                                 try {
-                                    stream.channel.truncate(checkpoint)
-                                    stream.channel.position(checkpoint)
-                                    stream.flush()
-                                    fetchTo(segment, agent, referer, cookie, stream, control)
+                                    raf.setLength(checkpoint)
+                                    raf.seek(checkpoint)
+                                    fetchTo(segment, agent, referer, cookie, raf, control)
                                     failure = null
                                     break
                                 } catch (e: Exception) {
