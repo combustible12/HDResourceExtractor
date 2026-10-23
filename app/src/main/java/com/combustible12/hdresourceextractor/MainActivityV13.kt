@@ -74,7 +74,7 @@ class MainActivityV13 : AppCompatActivity() {
                     column >= 0 && cursor.getInt(column) == DownloadManager.STATUS_SUCCESSFUL
                 }
             } ?: false
-            val message = if (succeeded) "$label 下载成功，已保存到相册" else "$label 下载失败，请重试"
+            val message = if (succeeded) "$label 下载完成" else "$label 下载失败，请检查网络、存储或链接有效性"
             statusText.text = message
             Toast.makeText(this@MainActivityV13, message, Toast.LENGTH_LONG).show()
         }
@@ -976,40 +976,55 @@ class MainActivityV13 : AppCompatActivity() {
     private fun downloadOriginalVideo() {
         val url = originVideoUrl
         if (url.isBlank()) {
-            Toast.makeText(this, "没有无水印原视频源", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "没有可用的视频原始地址", Toast.LENGTH_SHORT).show()
             return
         }
-        val cookies = mapOf(url to CookieManager.getInstance().getCookie(url).orEmpty())
-        statusText.text = "正在下载视频…"
-        XhsVideoDownloader(this).download(
-            candidates = listOf(url),
-            userAgent = webView.settings.userAgentString.orEmpty(),
-            referer = currentPageUrl,
-            cookies = cookies,
-            status = { message ->
-                runOnUiThread { statusText.text = message }
-            }
-        ) { result ->
-            runOnUiThread {
-                statusText.text = result.message
-                Toast.makeText(
-                    this,
-                    result.message,
-                    if (result.success) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
-                ).show()
-            }
-        }
+        enqueueVideo(url, "原视频")
     }
 
     private fun downloadMotion(url: String, index: Int) {
-        val cookies = mapOf(url to CookieManager.getInstance().getCookie(url).orEmpty())
-        XhsVideoDownloader(this).download(
-            candidates = listOf(url),
-            userAgent = webView.settings.userAgentString.orEmpty(),
-            referer = currentPageUrl,
-            cookies = cookies,
-            status = { message -> runOnUiThread { statusText.text = "动态 ${index + 1}：$message" } }
-        ) { result -> runOnUiThread { statusText.text = result.message } }
+        enqueueVideo(url, "动态视频 " + (index + 1))
+    }
+
+    /**
+     * Android DownloadManager streams straight to public Movies storage,
+     * survives process death and retries supported network interruptions.
+     * Unlike the previous downloader this does not create a second full-size cache copy.
+     */
+    private fun enqueueVideo(url: String, label: String): Boolean {
+        if (url.substringBefore('?').endsWith(".m3u8", ignoreCase = true)) {
+            statusText.text = "此资源是 HLS 分段流，暂不能直接保存成 MP4"
+            return false
+        }
+        return try {
+            val name = "hd_video_" + System.currentTimeMillis() + ".mp4"
+            val request = DownloadManager.Request(Uri.parse(url))
+                .setTitle(name)
+                .setDescription("HDResourceExtractor · " + label)
+                .setMimeType("video/mp4")
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalPublicDir(
+                    Environment.DIRECTORY_MOVIES, "HDResourceExtractor/" + name
+                )
+                .setAllowedOverMetered(true)
+                .setAllowedOverRoaming(true)
+            webView.settings.userAgentString?.takeIf { it.isNotBlank() }?.let {
+                request.addRequestHeader("User-Agent", it)
+            }
+            currentPageUrl.takeIf { it.isNotBlank() }?.let {
+                request.addRequestHeader("Referer", it)
+            }
+            CookieManager.getInstance().getCookie(url)?.takeIf { it.isNotBlank() }?.let {
+                request.addRequestHeader("Cookie", it)
+            }
+            val id = (getSystemService(DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
+            pendingImageDownloads[id] = label
+            statusText.text = label + " 已加入系统下载任务，可在通知栏查看进度"
+            true
+        } catch (e: Exception) {
+            statusText.text = label + " 下载失败：" + (e.message ?: "无法加入任务")
+            false
+        }
     }
 
     private fun saveAll() {
