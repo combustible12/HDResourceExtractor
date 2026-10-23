@@ -220,7 +220,7 @@ class DashDownloader(private val context: Context) {
         }
         fun expand(pattern: String, id: String, bandwidth: Long, number: Long, time: Long): String {
             val escaped = pattern.replace("\$\$", "\u0001")
-            val token = Regex("""\\$(RepresentationID|Bandwidth|Number|Time)(%0(\\d+)d)?\\$""")
+            val token = Regex("""\$(RepresentationID|Bandwidth|Number|Time)(%0(\d+)d)?\$""")
             return token.replace(escaped) { match ->
                 val value = when (match.groupValues[1]) {
                     "RepresentationID" -> id
