@@ -189,6 +189,7 @@ class DashDownloader(private val context: Context) {
         factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
         val doc = factory.newDocumentBuilder().parse(xml.byteInputStream())
         val root = doc.documentElement
+        if (root.localName != "MPD" && root.nodeName != "MPD") error("无效的 DASH MPD 清单")
         if (root.getAttribute("type") == "dynamic") error("暂不支持直播 DASH")
         if (root.getElementsByTagNameNS("*", "ContentProtection").length > 0) error("不支持 DRM 加密 DASH")
         fun children(node: org.w3c.dom.Element, name: String): List<org.w3c.dom.Element> {
@@ -252,6 +253,9 @@ class DashDownloader(private val context: Context) {
                 val templates = inherited(hierarchy, "SegmentTemplate")
                 val urls = mutableListOf<String>()
                 if (lists.isNotEmpty()) {
+                    if (lists.any { child(it, "Initialization")?.hasAttribute("range") == true || children(it, "SegmentURL").any { seg -> seg.hasAttribute("mediaRange") || seg.hasAttribute("indexRange") } }) {
+                        error("此 DASH 使用字节范围分段，暂不支持直接拼接")
+                    }
                     val init = lists.asReversed().firstNotNullOfOrNull { child(it, "Initialization")?.getAttribute("sourceURL")?.takeIf(String::isNotEmpty) }
                     if (!init.isNullOrEmpty()) urls.add(URL(URL(repBase), init).toString())
                     val segments = lists.asReversed().firstOrNull { children(it, "SegmentURL").isNotEmpty() }
@@ -267,7 +271,8 @@ class DashDownloader(private val context: Context) {
                     val init = attr(templates, "initialization")
                     val start = attr(templates, "startNumber", "1").toLongOrNull() ?: 1L
                     val scale = (attr(templates, "timescale", "1").toLongOrNull() ?: 1L).coerceAtLeast(1L)
-                    if (init.isNotEmpty()) urls.add(URL(URL(repBase), expand(init, id, bandwidth, start, 0)).toString())
+                    if (init.isEmpty()) error("SegmentTemplate 缺少初始化片段")
+                    urls.add(URL(URL(repBase), expand(init, id, bandwidth, start, 0)).toString())
                     val timeline = templates.asReversed().firstNotNullOfOrNull { child(it, "SegmentTimeline") }
                     val stamps = mutableListOf<Long>()
                     if (timeline != null) {
@@ -299,7 +304,7 @@ class DashDownloader(private val context: Context) {
                         urls.add(URL(URL(repBase), name).toString())
                     }
                 }
-                if (urls.isNotEmpty()) tracks.add(Track(type, bandwidth, urls))
+                if (urls.size > 1) tracks.add(Track(type, bandwidth, urls))
             }
         }
         if (tracks.isEmpty()) error("MPD 未找到可下载的非加密音视频轨道")
