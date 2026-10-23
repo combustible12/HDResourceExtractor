@@ -53,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     private val visibleResources = mutableListOf<String>()
     private val xhsCandidates = linkedMapOf<String, String>()
     private val xhsCandidateScores = mutableMapOf<String, Int>()
+    private val structuredMedia = linkedSetOf<String>()
     private val handler = Handler(Looper.getMainLooper())
 
     private var pendingSharedText: String = ""
@@ -349,13 +350,13 @@ class MainActivity : AppCompatActivity() {
 
         resultTitle.text = when {
             snapshot.isEmpty() -> "提取结果"
-            isXhsSession && !xhsFallbackShown -> "正文图片（${snapshot.size}）"
+            isXhsSession && !xhsFallbackShown -> "正文媒体（${snapshot.size}）"
             else -> "检测到的资源（${snapshot.size}）"
         }
 
         saveAllButton.visibility = if (snapshot.isEmpty()) View.GONE else View.VISIBLE
         saveAllButton.text = if (isXhsSession && !xhsFallbackShown) {
-            "保存全部图片"
+            "保存全部媒体"
         } else {
             "保存全部资源"
         }
@@ -641,6 +642,7 @@ class MainActivity : AppCompatActivity() {
             xhsCandidates.clear()
             xhsCandidateScores.clear()
         }
+        synchronized(structuredMedia) { structuredMedia.clear() }
         visibleResources.clear()
         renderResults()
 
@@ -917,14 +919,14 @@ class MainActivity : AppCompatActivity() {
     private fun finalizeXhsResults(allowFallback: Boolean) {
         val filtered = synchronized(xhsCandidates) {
             xhsCandidates.values.toList()
-        }
+        } + synchronized(structuredMedia) { structuredMedia.toList() }
 
         if (filtered.isNotEmpty()) {
             runOnUiThread {
                 visibleResources.clear()
                 visibleResources.addAll(filtered)
                 renderResults()
-                statusText.text = "已识别 ${filtered.size} 张小红书正文图片"
+                statusText.text = "已识别 ${filtered.size} 个小红书图片/视频资源"
             }
             return
         }
@@ -1048,14 +1050,29 @@ class MainActivity : AppCompatActivity() {
     private fun addStructuredImages(json: String) {
         try {
             val result = org.json.JSONObject(json)
-            val images = result.optJSONArray("images") ?: return
-            for (i in 0 until images.length()) {
-                val image = images.optJSONObject(i) ?: continue
-                val url = image.optString("originalUrl")
-                if (url.startsWith("https://")) {
-                    collectXhsCandidate(
-                        url, image.optInt("width"), image.optInt("height"), "structured"
-                    )
+            val images = result.optJSONArray("images")
+            if (images != null) {
+                for (i in 0 until images.length()) {
+                    val image = images.optJSONObject(i) ?: continue
+                    val url = image.optString("originalUrl")
+                    if (url.startsWith("https://")) {
+                        collectXhsCandidate(
+                            url, image.optInt("width"), image.optInt("height"), "structured"
+                        )
+                    }
+                }
+            }
+
+            val video = result.optString("originVideoUrl")
+            synchronized(structuredMedia) {
+                if (video.startsWith("https://")) structuredMedia.add(video)
+                val live = result.optJSONArray("livePhotos")
+                if (live != null) {
+                    for (i in 0 until live.length()) {
+                        val item = live.optJSONObject(i) ?: continue
+                        val motion = item.optString("motionUrl")
+                        if (motion.startsWith("https://")) structuredMedia.add(motion)
+                    }
                 }
             }
             handler.post { finalizeXhsResults(allowFallback = true) }
