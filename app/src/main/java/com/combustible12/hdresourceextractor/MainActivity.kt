@@ -66,6 +66,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        taskStore.all().filter { it.kind != "SYSTEM" && it.status in listOf("running", "queued") }.forEach {
+            taskStore.update(it.id, "interrupted", detail = "应用退出，点击重试可从已保存片段继续")
+        }
         buildUi()
         configureWebView()
         AppUpdater(this).recoverPendingUpdate { message -> runOnUiThread { statusText.text = message } }
