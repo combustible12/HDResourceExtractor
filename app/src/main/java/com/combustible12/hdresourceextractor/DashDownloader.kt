@@ -330,17 +330,31 @@ class DashDownloader(private val context: Context) {
             writer.start()
             val buffer = ByteBuffer.allocateDirect(16 * 1024 * 1024)
             val info = MediaCodec.BufferInfo()
-            extractors.forEachIndexed { i, extractor ->
-                extractor.selectTrack(indexes[i])
-                while (true) {
-                    buffer.clear()
-                    val size = extractor.readSampleData(buffer, 0)
-                    if (size < 0) break
-                    if (size > buffer.capacity()) error("媒体样本超出缓冲区")
-                    info.set(0, size, extractor.sampleTime, extractor.sampleFlags)
-                    writer.writeSampleData(outputIndexes[i], buffer, info)
-                    extractor.advance()
+            extractors.forEachIndexed { i, extractor -> extractor.selectTrack(indexes[i]) }
+            val finished = BooleanArray(extractors.size)
+            val lastTime = LongArray(extractors.size) { -1L }
+            while (finished.any { !it }) {
+                val candidate = extractors.indices
+                    .filter { !finished[it] }
+                    .minByOrNull { i ->
+                        val time = extractors[i].sampleTime
+                        if (time < 0) Long.MAX_VALUE else time
+                    } ?: break
+                val extractor = extractors[candidate]
+                buffer.clear()
+                val size = extractor.readSampleData(buffer, 0)
+                if (size < 0) {
+                    finished[candidate] = true
+                    continue
                 }
+                if (size > buffer.capacity()) error("媒体样本超出缓冲区")
+                val time = extractor.sampleTime
+                if (time < 0) error("无效媒体时间戳")
+                if (time < lastTime[candidate]) error("媒体轨道时间戳倒退")
+                lastTime[candidate] = time
+                info.set(0, size, time, extractor.sampleFlags)
+                writer.writeSampleData(outputIndexes[candidate], buffer, info)
+                extractor.advance()
             }
             writer.stop()
         } finally {
