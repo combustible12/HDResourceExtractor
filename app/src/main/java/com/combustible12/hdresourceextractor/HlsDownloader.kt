@@ -10,6 +10,17 @@ import java.net.URL
 
 /** Unencrypted MPEG-TS HLS VOD downloader. Streams segments to a single .ts media file. */
 class HlsDownloader(private val context: Context) {
+    companion object {
+        private val running = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    }
+
+    fun pause(url: String) {
+        context.getSharedPreferences("hls_download_progress", Context.MODE_PRIVATE)
+            .edit().putBoolean("pause_" + url.hashCode(), true).apply()
+    }
+
+    fun isRunning(url: String): Boolean = running.contains(url)
+
     fun download(
         url: String,
         userAgent: String,
@@ -17,9 +28,14 @@ class HlsDownloader(private val context: Context) {
         cookie: String,
         callback: (Boolean, String) -> Unit
     ) {
+        if (!running.add(url)) {
+            callback(false, "分段下载任务已经在运行")
+            return
+        }
         Thread {
             val prefs = context.getSharedPreferences("hls_download_progress", Context.MODE_PRIVATE)
             val key = "media_" + url.hashCode().toString()
+            prefs.edit().remove("pause_" + url.hashCode()).apply()
             prefs.edit().putString("pending_url", url).putString("pending_agent", userAgent).putString("pending_referer", referer).putString("pending_cookie", cookie).apply()
             var target: android.net.Uri? = null
             try {
@@ -69,6 +85,7 @@ class HlsDownloader(private val context: Context) {
                         output.channel.position(savedBytes)
                         effectiveSegments.forEachIndexed { index, segment ->
                             if (index < savedIndex) return@forEachIndexed
+                            if (prefs.getBoolean("pause_" + url.hashCode(), false)) throw InterruptedException("已暂停；再次下载可从已完成片段继续")
                             val temp = java.io.File.createTempFile("hls_segment_", ".ts", context.cacheDir)
                             try {
                                 var downloaded = false
@@ -116,8 +133,9 @@ class HlsDownloader(private val context: Context) {
                 prefs.edit().remove("pending_url").remove("pending_agent").remove("pending_referer").remove("pending_cookie").apply()
                 callback(true, "HLS 视频已保存至 Movies/HDResourceExtractor（TS 原始封装）")
             } catch (e: Exception) {
-                // Keep the pending file and segment position to resume on the next request.
-                callback(false, "HLS 下载中断：可再次点下载继续；" + (e.message ?: "未知错误"))
+                callback(false, "分段任务停止，进度已保留：" + (e.message ?: "未知错误"))
+            } finally {
+                running.remove(url)
             }
         }.start()
     }
@@ -125,7 +143,7 @@ class HlsDownloader(private val context: Context) {
     fun resumePending(callback: (Boolean, String) -> Unit) {
         val prefs = context.getSharedPreferences("hls_download_progress", Context.MODE_PRIVATE)
         val url = prefs.getString("pending_url", "").orEmpty()
-        if (url.isBlank()) return
+        if (url.isBlank() || prefs.getBoolean("pause_" + url.hashCode(), false)) return
         download(url, prefs.getString("pending_agent", "").orEmpty(),
             prefs.getString("pending_referer", "").orEmpty(),
             prefs.getString("pending_cookie", "").orEmpty(), callback)
