@@ -112,7 +112,7 @@ object DownloadCache {
                 }
                 control?.check()
                 write(metaFile, JSONObject().put("identity", identity).put("bytes", target.length())
-                    .put("validator", validator).put("sha256", digest(target)).put("complete", true))
+                    .put("validator", validator).put("contentType", conn.contentType.orEmpty()).put("sha256", digest(target)).put("complete", true))
                 return target
             } catch (e: Exception) {
                 // Preserve only bytes actually flushed to disk, plus their validator and digest.

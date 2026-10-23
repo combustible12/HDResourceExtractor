@@ -10,7 +10,7 @@ class DownloadTaskStore(context: Context) {
     data class Task(val id: String, val url: String, val kind: String, val status: String,
         val progress: Int = 0, val detail: String = "", val systemId: Long = -1L,
         val agent: String = "", val referer: String = "", val cookie: String = "",
-        val name: String = "", val output: String = "")
+        val name: String = "", val output: String = "", val sources: String = "[]")
     private fun decode(): MutableList<Task> {
         val arr = JSONArray(prefs.getString("tasks", "[]") ?: "[]")
         return (0 until arr.length()).mapNotNull { i -> runCatching {
@@ -18,7 +18,7 @@ class DownloadTaskStore(context: Context) {
             Task(o.getString("id"), o.getString("url"), o.getString("kind"), o.getString("status"),
                 o.optInt("progress"), o.optString("detail"), o.optLong("systemId", -1),
                 o.optString("agent"), o.optString("referer"), o.optString("cookie"),
-                o.optString("name"), o.optString("output"))
+                o.optString("name"), o.optString("output"), o.optString("sources", "[]"))
         }.getOrNull() }.toMutableList()
     }
     private fun save(tasks: List<Task>) {
@@ -27,13 +27,13 @@ class DownloadTaskStore(context: Context) {
         tasks.forEach { t -> arr.put(JSONObject().put("id", t.id).put("url", t.url).put("kind", t.kind)
             .put("status", t.status).put("progress", t.progress).put("detail", t.detail)
             .put("systemId", t.systemId).put("agent", t.agent).put("referer", t.referer)
-            .put("cookie", t.cookie).put("name", t.name).put("output", t.output)) }
+            .put("cookie", t.cookie).put("name", t.name).put("output", t.output).put("sources", t.sources)) }
         check(prefs.edit().putString("tasks", arr.toString()).commit()) { "无法保存任务状态" }
     }
     fun all(): List<Task> = synchronized(lock) { decode().asReversed() }
     fun get(id: String): Task? = synchronized(lock) { decode().firstOrNull { it.id == id } }
     fun add(url: String, kind: String, systemId: Long = -1L, agent: String = "", referer: String = "",
-            cookie: String = "", name: String = ""): Task = synchronized(lock) {
+            cookie: String = "", name: String = "", sources: String = "[]"): Task = synchronized(lock) {
         val tasks = decode()
         val identity = ResourceIdentity.of(url)
         check(tasks.none { ResourceIdentity.of(it.url) == identity && it.status !in listOf("failed", "cancelled") }) {
@@ -41,7 +41,7 @@ class DownloadTaskStore(context: Context) {
         }
         val old = tasks.lastOrNull { ResourceIdentity.of(it.url) == identity && it.status in listOf("failed", "cancelled") }
         val task = Task(old?.id ?: java.util.UUID.randomUUID().toString(), url, kind, "queued", systemId = systemId,
-            agent = agent, referer = referer, cookie = cookie, name = name)
+            agent = agent, referer = referer, cookie = cookie, name = name, sources = sources)
         if (old != null) tasks.remove(old)
         tasks.add(task); save(tasks); task
     }

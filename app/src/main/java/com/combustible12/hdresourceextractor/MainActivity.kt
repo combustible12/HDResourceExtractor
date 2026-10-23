@@ -49,6 +49,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var resultTitle: TextView
     private lateinit var saveAllButton: Button
 
+    private val imageFallbacks = mutableMapOf<String, LinkedHashSet<String>>()
     private val taskStore by lazy { DownloadTaskStore(this) }
     private val resources = linkedSetOf<String>()
     private val visibleResources = mutableListOf<String>()
@@ -75,8 +76,12 @@ class MainActivity : AppCompatActivity() {
         }
         buildUi()
         configureWebView()
-        AppUpdater(this).recoverPendingUpdate { message -> runOnUiThread { statusText.text = message } }
         handleIncomingIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::statusText.isInitialized) AppUpdater(this).recoverPendingUpdate { message -> runOnUiThread { statusText.text = message } }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -450,6 +455,9 @@ class MainActivity : AppCompatActivity() {
             imageView.setImageDrawable(ColorDrawable(Color.rgb(45, 48, 54)))
         } else {
             imageView.load(url) {
+                addHeader("User-Agent", webView.settings.userAgentString.orEmpty())
+                if (currentPageUrl.isNotBlank()) addHeader("Referer", currentPageUrl)
+                CookieManager.getInstance().getCookie(url)?.takeIf { it.isNotBlank() }?.let { addHeader("Cookie", it) }
                 crossfade(true)
                 placeholder(ColorDrawable(Color.rgb(235, 237, 240)))
                 error(ColorDrawable(Color.rgb(224, 227, 231)))
@@ -658,6 +666,7 @@ class MainActivity : AppCompatActivity() {
         synchronized(xhsCandidates) {
             xhsCandidates.clear()
             xhsCandidateScores.clear()
+            imageFallbacks.clear()
         }
         synchronized(structuredMedia) { structuredMedia.clear() }
         synchronized(structuredOtherImages) { structuredOtherImages.clear() }
@@ -843,6 +852,7 @@ class MainActivity : AppCompatActivity() {
         val score = xhsQualityScore(url, width, height, source)
 
         synchronized(xhsCandidates) {
+            imageFallbacks.getOrPut(key) { linkedSetOf() }.add(url)
             val oldScore = xhsCandidateScores[key] ?: Int.MIN_VALUE
             if (score > oldScore) {
                 xhsCandidates[key] = xhsOriginalImageUrl(url)
@@ -1245,7 +1255,12 @@ class MainActivity : AppCompatActivity() {
             val basename = safe.substringBeforeLast('.', safe)
             // The URL identity prevents two different resources with the same source name colliding.
             val name = basename + "_" + ResourceIdentity.of(url).take(12) + "." + extension
-            taskStore.add(url, kind, agent = webView.settings.userAgentString.orEmpty(),
+            val fallbacks = org.json.JSONArray()
+            synchronized(xhsCandidates) { imageFallbacks[canonicalXhsKey(url)]?.forEach { candidate ->
+                if (candidate != url) fallbacks.put(org.json.JSONObject().put("url", candidate)
+                    .put("cookie", CookieManager.getInstance().getCookie(candidate).orEmpty()))
+            } }
+            taskStore.add(url, kind, sources = fallbacks.toString(), agent = webView.settings.userAgentString.orEmpty(),
                 referer = currentPageUrl, cookie = CookieManager.getInstance().getCookie(url).orEmpty(), name = name)
             DownloadService.start(this)
             if (showToast) Toast.makeText(this, "已加入下载队列", Toast.LENGTH_SHORT).show()

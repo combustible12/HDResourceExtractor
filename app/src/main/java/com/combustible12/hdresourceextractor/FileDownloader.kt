@@ -10,10 +10,26 @@ import java.io.File
 class FileDownloader(private val context: Context) {
     fun download(t: DownloadTaskStore.Task, c: SegmentTaskQueue.Control, progress: (Int, String) -> Unit) {
         if (MediaPublisher.saved(context, t.url)) return
-        val file = DownloadCache.fetch(t.url, File(DownloadCache.dir(context, t.url), "file"), t.agent, t.referer, t.cookie, c,
-            progress = { done, total -> progress(if (total > 0) (done * 95 / total).toInt() else 0, "已下载 ${done / 1024} KB") })
-        val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(t.name.substringAfterLast('.').lowercase()) ?: "application/octet-stream"
-        MediaPublisher.save(context, t.url, file, t.name, mime, c)
+        val candidates = mutableListOf(t.url to t.cookie)
+        val extras = org.json.JSONArray(t.sources)
+        for (i in 0 until extras.length()) extras.optJSONObject(i)?.let { item ->
+            val source = item.optString("url")
+            if (source.startsWith("https://") || source.startsWith("http://")) candidates.add(source to item.optString("cookie"))
+        }
+        var failure: Exception? = null
+        for ((source, cookie) in candidates.distinctBy { it.first }) {
+            try {
+                c.check()
+                val file = DownloadCache.fetch(source, File(DownloadCache.dir(context, t.url), "file_" + ResourceIdentity.hash(source)), t.agent, t.referer, cookie, c,
+                    progress = { done, total -> progress(if (total > 0) (done * 95 / total).toInt() else 0, "已下载 ${done / 1024} KB") })
+                val mime = MediaSniffer.detect(file, DownloadCache.json(File(file.path + ".json")).optString("contentType"), t.name)
+                val ext = android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: t.name.substringAfterLast('.', "bin")
+                MediaPublisher.save(context, t.url, file, t.name.substringBeforeLast('.') + "." + ext, mime, c)
+                failure = null
+                break
+            } catch (e: Exception) { c.check(); failure = e }
+        }
+        if (failure != null) throw failure
         DownloadCache.clear(context, t.url)
     }
 }
