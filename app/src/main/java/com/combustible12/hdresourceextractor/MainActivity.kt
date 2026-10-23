@@ -1274,7 +1274,7 @@ class MainActivity : AppCompatActivity() {
             return true
         }
         if (path.endsWith(".mpd")) {
-            HlsDownloader(this).download(
+            DashDownloader(this).download(
                 url = url,
                 userAgent = webView.settings.userAgentString.orEmpty(),
                 referer = currentPageUrl,
