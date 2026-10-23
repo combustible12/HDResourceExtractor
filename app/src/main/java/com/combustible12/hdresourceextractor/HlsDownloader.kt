@@ -43,8 +43,13 @@ class HlsDownloader(private val context: Context) {
                                 val conn = connect(segment, userAgent, referer, cookie)
                                 try {
                                     if (conn.responseCode !in 200..299) error("片段 HTTP ${conn.responseCode}")
-                                    conn.inputStream.use { input -> input.copyTo(output, 128 * 1024) }
-                                    completed = true
+                                    val temp = java.io.File.createTempFile("hls_segment_", ".ts", context.cacheDir)
+                                    try {
+                                        conn.inputStream.use { input -> temp.outputStream().use { input.copyTo(it, 128 * 1024) } }
+                                        if (temp.length() == 0L) error("片段为空")
+                                        temp.inputStream().use { it.copyTo(output, 128 * 1024) }
+                                        completed = true
+                                    } finally { temp.delete() }
                                     break
                                 } finally { conn.disconnect() }
                             } catch (e: Exception) {
@@ -85,7 +90,6 @@ class HlsDownloader(private val context: Context) {
         if (body.contains("#EXT-X-MAP") || body.contains("#EXT-X-BYTERANGE")) {
             error("该 HLS 使用 fMP4 或字节范围片段，暂不支持")
         }
-        if (!body.contains("#EXT-X-ENDLIST")) error("直播 HLS 暂不支持完整保存")
         val lines = body.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
         if (lines.any { it.startsWith("#EXT-X-STREAM-INF") }) {
             val options = mutableListOf<Pair<Long,String>>()
@@ -98,6 +102,7 @@ class HlsDownloader(private val context: Context) {
             val best = options.maxByOrNull { it.first }?.second ?: error("没有可用的 HLS 画质")
             return resolveSegments(best, agent, referer, cookie, depth + 1)
         }
+        if (!body.contains("#EXT-X-ENDLIST")) error("直播 HLS 暂不支持完整保存")
         if (!lines.any { it.startsWith("#EXTINF") }) error("缺少 HLS 片段元数据")
         val segments = lines.filter { !it.startsWith("#") }.map { URL(URL(raw), it).toString() }
         if (segments.size > 10000) error("HLS 片段数量超限")
