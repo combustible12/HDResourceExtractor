@@ -554,10 +554,11 @@ class MainActivity : AppCompatActivity() {
                 if (isXhsSession) {
                     statusText.text = "正在识别小红书正文图片…"
                     scanXhsNoteResources(silent = true)
+                    scanStructuredNote()
                     handler.postDelayed({ scanXhsNoteResources(silent = true) }, 800)
-                    handler.postDelayed({ scanXhsNoteResources(silent = true) }, 2200)
+                    handler.postDelayed({ scanXhsNoteResources(silent = true); scanStructuredNote() }, 2200)
                     handler.postDelayed({ finalizeXhsResults(allowFallback = false) }, 3000)
-                    handler.postDelayed({ scanXhsNoteResources(silent = true) }, 5000)
+                    handler.postDelayed({ scanXhsNoteResources(silent = true); scanStructuredNote() }, 5000)
                     handler.postDelayed({ finalizeXhsResults(allowFallback = true) }, 6500)
                     handler.postDelayed({ scanXhsNoteResources(silent = true) }, 10000)
                     handler.postDelayed({ finalizeXhsResults(allowFallback = true) }, 12000)
@@ -657,6 +658,7 @@ class MainActivity : AppCompatActivity() {
         if (isXhsSession) {
             statusText.text = "正在重新识别小红书正文图片…"
             scanXhsNoteResources(silent = true)
+            scanStructuredNote()
             handler.postDelayed({ finalizeXhsResults(allowFallback = true) }, 900)
         } else {
             scanDomResources()
@@ -699,6 +701,16 @@ class MainActivity : AppCompatActivity() {
         if (isXhsSession) {
             collectXhsCandidate(url, 0, 0, "network")
         }
+    }
+
+    private val sharedXhsParser by lazy {
+        assets.open("xhs_parser.js").bufferedReader(Charsets.UTF_8).use { it.readText() }
+    }
+
+    private fun scanStructuredNote() {
+        if (!isXhsSession) return
+        val script = sharedXhsParser + "\n;try{HDExtractor.structured(JSON.stringify(window.HDXhsParser.extract()));}catch(e){}"
+        webView.evaluateJavascript(script, null)
     }
 
     private fun scanXhsNoteResources(silent: Boolean = false) {
@@ -1033,7 +1045,29 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(script, null)
     }
 
+    private fun addStructuredImages(json: String) {
+        try {
+            val result = org.json.JSONObject(json)
+            val images = result.optJSONArray("images") ?: return
+            for (i in 0 until images.length()) {
+                val image = images.optJSONObject(i) ?: continue
+                val url = image.optString("originalUrl")
+                if (url.startsWith("https://")) {
+                    collectXhsCandidate(
+                        url, image.optInt("width"), image.optInt("height"), "structured"
+                    )
+                }
+            }
+            handler.post { finalizeXhsResults(allowFallback = true) }
+        } catch (_: Exception) {}
+    }
+
     private inner class ResourceBridge {
+        @JavascriptInterface
+        fun structured(json: String) {
+            addStructuredImages(json)
+        }
+
         @JavascriptInterface
         fun add(url: String) {
             collectGenericResource(url, showImmediately = !isXhsSession || xhsFallbackShown)
