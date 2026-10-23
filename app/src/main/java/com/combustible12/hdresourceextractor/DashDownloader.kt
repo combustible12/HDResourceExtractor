@@ -180,80 +180,130 @@ class DashDownloader(private val context: Context) {
         } finally { conn.disconnect() }
     }
 
+    /** Resolve static, clear MPDs with inherited SegmentTemplate, SegmentTimeline or SegmentList. */
     private fun parse(manifest: String, xml: String): List<Track> {
-        if (xml.contains("ContentProtection", ignoreCase = true)) error("不支持 DRM 加密 DASH")
         if (xml.length > 5_000_000) error("MPD 清单过大")
-        val parser = XmlPullParserFactory.newInstance().apply { isNamespaceAware = true }.newPullParser()
-        parser.setInput(xml.reader())
-        val tracks = mutableListOf<Track>()
-        var adaptationType = ""
-        var representationType = ""
-        var bandwidth = 0L
-        var init = ""
-        val media = mutableListOf<String>()
-        var depth = 0
-        var repDepth = -1
-        var inSegmentList = false
-        var baseText = false
-        var repBase = ""
-        var adaptationBase = ""
-        var mpdBase = manifest
-        var event = parser.eventType
-        while (event != XmlPullParser.END_DOCUMENT) {
-            when (event) {
-                XmlPullParser.START_TAG -> {
-                    depth++
-                    when (parser.name.substringAfter(':')) {
-                        "AdaptationSet" -> {
-                            adaptationType = parser.getAttributeValue(null, "contentType").orEmpty()
-                            if (adaptationType.isBlank()) adaptationType = parser.getAttributeValue(null, "mimeType").orEmpty().substringBefore('/')
-                            adaptationBase = mpdBase
-                        }
-                        "Representation" -> {
-                            repDepth = depth
-                            bandwidth = parser.getAttributeValue(null, "bandwidth")?.toLongOrNull() ?: 0
-                            representationType = parser.getAttributeValue(null, "mimeType").orEmpty().substringBefore('/').ifBlank { adaptationType }
-                            repBase = adaptationBase
-                            init = ""
-                            media.clear()
-                        }
-                        "BaseURL" -> baseText = true
-                        "SegmentList" -> inSegmentList = true
-                        "Initialization" -> if (repDepth > 0 && inSegmentList) init = parser.getAttributeValue(null, "sourceURL").orEmpty()
-                        "SegmentURL" -> if (repDepth > 0 && inSegmentList) {
-                            val part = parser.getAttributeValue(null, "media").orEmpty()
-                            if (part.isNotBlank()) media.add(part)
-                        }
-                    }
-                }
-                XmlPullParser.TEXT -> if (baseText) {
-                    val value = parser.text?.trim().orEmpty()
-                    if (value.isNotBlank()) {
-                        val resolved = URL(URL(if (repDepth > 0) repBase else if (adaptationType.isNotBlank()) adaptationBase else mpdBase), value).toString()
-                        if (repDepth > 0) repBase = resolved
-                        else if (adaptationType.isNotBlank()) adaptationBase = resolved
-                        else mpdBase = resolved
-                    }
-                }
-                XmlPullParser.END_TAG -> {
-                    when (parser.name.substringAfter(':')) {
-                        "BaseURL" -> baseText = false
-                        "SegmentList" -> inSegmentList = false
-                        "Representation" -> {
-                            if (init.isNotBlank() && media.isNotEmpty() && representationType in listOf("video", "audio")) {
-                                val urls = (listOf(init) + media).map { URL(URL(repBase), it).toString() }
-                                tracks.add(Track(representationType, bandwidth, urls))
-                            }
-                            repDepth = -1
-                        }
-                        "AdaptationSet" -> adaptationType = ""
-                    }
-                    depth--
-                }
+        val factory = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+        factory.isNamespaceAware = true
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+        factory.setFeature("http://xml.org/sax/features/external-general-entities", false)
+        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+        val doc = factory.newDocumentBuilder().parse(xml.byteInputStream())
+        val root = doc.documentElement
+        if (root.getAttribute("type") == "dynamic") error("暂不支持直播 DASH")
+        if (root.getElementsByTagNameNS("*", "ContentProtection").length > 0) error("不支持 DRM 加密 DASH")
+        fun children(node: org.w3c.dom.Element, name: String): List<org.w3c.dom.Element> {
+            val result = mutableListOf<org.w3c.dom.Element>()
+            val list = node.childNodes
+            for (i in 0 until list.length) {
+                val el = list.item(i) as? org.w3c.dom.Element ?: continue
+                if (el.localName == name || el.nodeName == name) result.add(el)
             }
-            event = parser.next()
+            return result
         }
-        if (tracks.isEmpty()) error("仅支持非加密 SegmentList（含初始化片段）的 DASH")
+        fun child(node: org.w3c.dom.Element, name: String) = children(node, name).firstOrNull()
+        fun base(parent: String, node: org.w3c.dom.Element): String {
+            val value = child(node, "BaseURL")?.textContent?.trim().orEmpty()
+            return if (value.isEmpty()) parent else URL(URL(parent), value).toString()
+        }
+        fun inherited(nodes: List<org.w3c.dom.Element>, name: String): List<org.w3c.dom.Element> =
+            nodes.mapNotNull { child(it, name) }
+        fun attr(nodes: List<org.w3c.dom.Element>, key: String, default: String = ""): String =
+            nodes.asReversed().firstNotNullOfOrNull { it.getAttribute(key).takeIf(String::isNotEmpty) } ?: default
+        fun seconds(raw: String): Double {
+            val m = Regex("""P(?:([0-9.]+)D)?T?(?:([0-9.]+)H)?(?:([0-9.]+)M)?(?:([0-9.]+)S)?""").matchEntire(raw)
+                ?: return 0.0
+            return (m.groupValues[1].toDoubleOrNull() ?: 0.0) * 86400 +
+                (m.groupValues[2].toDoubleOrNull() ?: 0.0) * 3600 +
+                (m.groupValues[3].toDoubleOrNull() ?: 0.0) * 60 +
+                (m.groupValues[4].toDoubleOrNull() ?: 0.0)
+        }
+        fun expand(pattern: String, id: String, bandwidth: Long, number: Long, time: Long): String {
+            val escaped = pattern.replace("\$\$", "\u0001")
+            val token = Regex("""\\$(RepresentationID|Bandwidth|Number|Time)(%0(\\d+)d)?\\$""")
+            return token.replace(escaped) { match ->
+                val value = when (match.groupValues[1]) {
+                    "RepresentationID" -> id
+                    "Bandwidth" -> bandwidth.toString()
+                    "Number" -> number.toString()
+                    else -> time.toString()
+                }
+                val width = match.groupValues[3].toIntOrNull()?.coerceIn(0, 16) ?: 0
+                value.padStart(width, '0')
+            }.replace("\u0001", "$")
+        }
+        val tracks = mutableListOf<Track>()
+        val mpdBase = base(manifest, root)
+        val periods = children(root, "Period")
+        if (periods.size != 1) error("暂不支持多 Period DASH")
+        val period = periods.firstOrNull() ?: error("MPD 缺少 Period")
+        val periodBase = base(mpdBase, period)
+        val periodSeconds = seconds(period.getAttribute("duration").ifBlank { root.getAttribute("mediaPresentationDuration") })
+        for (adapt in children(period, "AdaptationSet")) {
+            val adaptBase = base(periodBase, adapt)
+            for (rep in children(adapt, "Representation")) {
+                val type = rep.getAttribute("mimeType").ifBlank { adapt.getAttribute("mimeType") }
+                    .substringBefore('/').ifBlank { rep.getAttribute("contentType").ifBlank { adapt.getAttribute("contentType") } }
+                if (type !in listOf("audio", "video")) continue
+                val bandwidth = rep.getAttribute("bandwidth").toLongOrNull() ?: 0L
+                val id = rep.getAttribute("id")
+                val repBase = base(adaptBase, rep)
+                val hierarchy = listOf(root, period, adapt, rep)
+                val lists = inherited(hierarchy, "SegmentList")
+                val templates = inherited(hierarchy, "SegmentTemplate")
+                val urls = mutableListOf<String>()
+                if (lists.isNotEmpty()) {
+                    val init = lists.asReversed().firstNotNullOfOrNull { child(it, "Initialization")?.getAttribute("sourceURL")?.takeIf(String::isNotEmpty) }
+                    if (!init.isNullOrEmpty()) urls.add(URL(URL(repBase), init).toString())
+                    val segments = lists.asReversed().firstOrNull { children(it, "SegmentURL").isNotEmpty() }
+                    segments?.let { list ->
+                        for (seg in children(list, "SegmentURL")) {
+                            val media = seg.getAttribute("media")
+                            if (media.isNotEmpty()) urls.add(URL(URL(repBase), media).toString())
+                        }
+                    }
+                } else if (templates.isNotEmpty()) {
+                    val media = attr(templates, "media")
+                    if (media.isEmpty()) continue
+                    val init = attr(templates, "initialization")
+                    val start = attr(templates, "startNumber", "1").toLongOrNull() ?: 1L
+                    val scale = (attr(templates, "timescale", "1").toLongOrNull() ?: 1L).coerceAtLeast(1L)
+                    if (init.isNotEmpty()) urls.add(URL(URL(repBase), expand(init, id, bandwidth, start, 0)).toString())
+                    val timeline = templates.asReversed().firstNotNullOfOrNull { child(it, "SegmentTimeline") }
+                    val stamps = mutableListOf<Long>()
+                    if (timeline != null) {
+                        val entries = children(timeline, "S")
+                        var clock = 0L
+                        for ((i, entry) in entries.withIndex()) {
+                            val d = entry.getAttribute("d").toLongOrNull() ?: error("DASH 时间轴缺少 d")
+                            if (d <= 0) error("DASH 时间轴 d 无效")
+                            clock = entry.getAttribute("t").toLongOrNull() ?: clock
+                            val repeat = entry.getAttribute("r").toLongOrNull() ?: 0L
+                            val next = entries.getOrNull(i + 1)?.getAttribute("t")?.toLongOrNull()
+                            val count = if (repeat >= 0) repeat + 1 else {
+                                val boundary = next ?: (periodSeconds * scale).toLong()
+                                if (boundary <= clock) error("无法确定 DASH 时间轴结束位置")
+                                (boundary - clock + d - 1) / d
+                            }
+                            if (count > 20000 || stamps.size + count > 20000) error("DASH 片段过多")
+                            repeat(count.toInt()) { stamps.add(clock); clock += d }
+                        }
+                    } else {
+                        val duration = attr(templates, "duration").toLongOrNull() ?: error("SegmentTemplate 缺少 duration")
+                        if (duration <= 0 || periodSeconds <= 0) error("无法计算 DASH 片段数量")
+                        val count = kotlin.math.ceil(periodSeconds * scale / duration).toInt()
+                        if (count !in 1..20000) error("DASH 片段数量无效")
+                        repeat(count) { stamps.add(it.toLong() * duration) }
+                    }
+                    for ((index, stamp) in stamps.withIndex()) {
+                        val name = expand(media, id, bandwidth, start + index, stamp)
+                        urls.add(URL(URL(repBase), name).toString())
+                    }
+                }
+                if (urls.isNotEmpty()) tracks.add(Track(type, bandwidth, urls))
+            }
+        }
+        if (tracks.isEmpty()) error("MPD 未找到可下载的非加密音视频轨道")
         return tracks
     }
 
