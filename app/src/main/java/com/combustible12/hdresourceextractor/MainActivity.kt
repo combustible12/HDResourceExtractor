@@ -1274,10 +1274,18 @@ class MainActivity : AppCompatActivity() {
             return true
         }
         if (path.endsWith(".mpd")) {
-            val warning = "DASH 分段视频尚不支持直接合并"
-            statusText.text = warning
-            if (showToast) Toast.makeText(this, warning, Toast.LENGTH_LONG).show()
-            return false
+            HlsDownloader(this).download(
+                url = url,
+                userAgent = webView.settings.userAgentString.orEmpty(),
+                referer = currentPageUrl,
+                cookie = CookieManager.getInstance().getCookie(url).orEmpty()
+            ) { _, message ->
+                runOnUiThread {
+                    statusText.text = message
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                }
+            }
+            return true
         }
 
         return try {
