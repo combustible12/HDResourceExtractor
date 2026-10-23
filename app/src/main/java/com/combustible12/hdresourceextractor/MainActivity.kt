@@ -67,6 +67,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         buildUi()
         configureWebView()
+        AppUpdater(this).recoverPendingUpdate { message -> runOnUiThread { statusText.text = message } }
         handleIncomingIntent(intent)
     }
 
@@ -301,6 +302,36 @@ class MainActivity : AppCompatActivity() {
                 0,
                 1f
             )
+        )
+
+        val downloadActions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            val retry = makeMainButton("重新下载", false).apply {
+                setOnClickListener {
+                    val prefs = getSharedPreferences("media_downloads", Context.MODE_PRIVATE)
+                    val url = prefs.getString("latest_url", "").orEmpty()
+                    if (url.isNotBlank()) enqueueDownload(url, 0, true)
+                    else statusText.text = "暂无下载记录"
+                }
+            }
+            val cancel = makeMainButton("取消下载", false).apply {
+                setOnClickListener {
+                    val prefs = getSharedPreferences("media_downloads", Context.MODE_PRIVATE)
+                    val id = prefs.getLong("latest_id", -1L)
+                    if (id > 0) {
+                        val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                        manager.remove(id)
+                        prefs.edit().remove("latest_id").apply()
+                        statusText.text = "已取消最近一项系统下载任务"
+                    } else statusText.text = "没有可取消的系统下载任务"
+                }
+            }
+            addView(retry, LinearLayout.LayoutParams(0, dp(42), 1f))
+            addView(cancel, LinearLayout.LayoutParams(0, dp(42), 1f))
+        }
+        foreground.addView(
+            downloadActions,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42))
         )
 
         foreground.addView(
@@ -1292,7 +1323,10 @@ class MainActivity : AppCompatActivity() {
                 ?.let { request.addRequestHeader("Cookie", it) }
 
             val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            manager.enqueue(request)
+            val downloadId = manager.enqueue(request)
+            val prefs = getSharedPreferences("media_downloads", Context.MODE_PRIVATE)
+            prefs.edit().putLong("latest_id", downloadId)
+                .putString("latest_url", url).apply()
 
             if (showToast) {
                 Toast.makeText(this, "已加入下载任务", Toast.LENGTH_SHORT).show()
