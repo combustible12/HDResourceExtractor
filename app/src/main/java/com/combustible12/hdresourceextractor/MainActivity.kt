@@ -227,13 +227,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        foreground.addView(
-            updateButton,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)).apply {
-                bottomMargin = dp(10)
-            }
-        )
-
         val resultHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -305,6 +298,13 @@ class MainActivity : AppCompatActivity() {
                 0,
                 1f
             )
+        )
+
+        foreground.addView(
+            updateButton,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)).apply {
+                topMargin = dp(8)
+            }
         )
 
         root.addView(
