@@ -37,8 +37,7 @@ class DashDownloader(private val context: Context) {
                 val video = tracks.filter { it.type == "video" }.maxByOrNull { it.bandwidth }
                     ?: error("DASH 未找到视频轨道")
                 val audio = tracks.filter { it.type == "audio" }.maxByOrNull { it.bandwidth }
-                    ?: error("DASH 未找到音频轨道")
-                val totalSegments = video.urls.size + audio.urls.size
+                val totalSegments = video.urls.size + (audio?.urls?.size ?: 0)
                 var completedSegments = 0
                 fun retrieve(track: Track): File {
                     val output = File(workDir, "${resumeKey}_${track.type}.mp4")
@@ -90,7 +89,7 @@ class DashDownloader(private val context: Context) {
                     return output
                 }
                 val v = retrieve(video)
-                val a = retrieve(audio)
+                val a = audio?.let { retrieve(it) }
                 val merged = File.createTempFile("dash_mux_", ".mp4", context.cacheDir)
                 temps.add(merged)
                 control?.check()
@@ -307,12 +306,12 @@ class DashDownloader(private val context: Context) {
         return tracks
     }
 
-    private fun mux(video: File, audio: File, destination: File) {
-        val extractors = listOf(MediaExtractor(), MediaExtractor())
+    private fun mux(video: File, audio: File?, destination: File) {
+        val extractors = if (audio == null) listOf(MediaExtractor()) else listOf(MediaExtractor(), MediaExtractor())
         var muxer: MediaMuxer? = null
         try {
             extractors[0].setDataSource(video.absolutePath)
-            extractors[1].setDataSource(audio.absolutePath)
+            if (audio != null) extractors[1].setDataSource(audio.absolutePath)
             val indexes = extractors.mapIndexed { i, extractor ->
                 (0 until extractor.trackCount).firstOrNull { n ->
                     extractor.getTrackFormat(n).getString(MediaFormat.KEY_MIME)?.startsWith(if (i == 0) "video/" else "audio/") == true
