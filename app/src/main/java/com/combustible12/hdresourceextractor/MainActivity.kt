@@ -1125,6 +1125,14 @@ class MainActivity : AppCompatActivity() {
             return false
         }
 
+        val path = url.substringBefore('?').substringBefore('#').lowercase(Locale.US)
+        if (path.endsWith(".m3u8") || path.endsWith(".mpd")) {
+            val warning = "分段播放列表不能直接保存为视频；需要媒体片段合并"
+            statusText.text = warning
+            if (showToast) Toast.makeText(this, warning, Toast.LENGTH_LONG).show()
+            return false
+        }
+
         return try {
             val extension = guessExtension(url)
             val fileName = if (isXhsSession && !xhsFallbackShown) {
@@ -1136,7 +1144,8 @@ class MainActivity : AppCompatActivity() {
                     .substringBefore('?')
                     .takeIf { it.isNotBlank() }
                     ?: "resource_${index + 1}"
-                if (rawName.contains('.')) rawName else "$rawName.$extension"
+                val safeName = rawName.replace(Regex("[^A-Za-z0-9._-]"), "_").take(90)
+                if (safeName.contains('.')) safeName else "$safeName.$extension"
             }
 
             val request = DownloadManager.Request(Uri.parse(url))
@@ -1192,6 +1201,12 @@ class MainActivity : AppCompatActivity() {
             lower.contains(".webp") || lower.contains("1080webp") -> "webp"
             lower.contains(".gif") -> "gif"
             lower.contains(".mp4") || lower.contains("video") -> "mp4"
+            lower.contains(".mov") -> "mov"
+            lower.contains(".webm") -> "webm"
+            lower.contains(".m4v") -> "m4v"
+            lower.contains(".avif") -> "avif"
+            lower.contains(".heic") -> "heic"
+            lower.contains(".jpeg") -> "jpeg"
             else -> "jpg"
         }
     }
