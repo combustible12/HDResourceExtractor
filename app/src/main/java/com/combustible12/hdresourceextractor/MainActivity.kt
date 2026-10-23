@@ -76,6 +76,7 @@ class MainActivity : AppCompatActivity() {
         configureWebView()
         AppUpdater(this).recoverPendingUpdate { message -> runOnUiThread { statusText.text = message } }
         HlsDownloader(this).resumePending { _, message -> runOnUiThread { statusText.text = message; renderResults() } }
+        ResumableVideo(this).resumePending { _, message -> runOnUiThread { statusText.text = message; renderResults() } }
         handleIncomingIntent(intent)
     }
 
@@ -354,6 +355,7 @@ class MainActivity : AppCompatActivity() {
                     val url = prefs.getString("pending_url", "").orEmpty()
                     if (url.isNotBlank()) {
                         HlsDownloader(this@MainActivity).pause(url)
+                        ResumableVideo(this@MainActivity).pause(url)
                         statusText.text = "当前片段结束后暂停，进度保留"
                     } else statusText.text = "没有分段下载任务"
                 }
@@ -1344,6 +1346,15 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                 }
             }
+            return true
+        }
+
+        if (path.endsWith(".mp4") || path.endsWith(".mov") || path.endsWith(".webm") || path.endsWith(".m4v")) {
+            ResumableVideo(this).download(url, webView.settings.userAgentString.orEmpty(),
+                currentPageUrl, CookieManager.getInstance().getCookie(url).orEmpty()) { _, message ->
+                runOnUiThread { statusText.text = message; renderResults() }
+            }
+            statusText.text = "已开始支持断点续传的视频下载"
             return true
         }
 
