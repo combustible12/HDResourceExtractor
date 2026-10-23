@@ -220,6 +220,20 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
+        val updateButton = makeMainButton("一键检查并升级", primary = false).apply {
+            setOnClickListener {
+                AppUpdater(this@MainActivity).checkForUpdate { message ->
+                    runOnUiThread { statusText.text = message }
+                }
+            }
+        }
+        foreground.addView(
+            updateButton,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)).apply {
+                bottomMargin = dp(10)
+            }
+        )
+
         val resultHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
