@@ -63,7 +63,7 @@ class AppUpdater(private val context: Context) {
     /** Called from the home screen; recovers a completed APK even after process death. */
     fun recoverPendingUpdate(onMessage: (String) -> Unit) {
         val prefs = context.getSharedPreferences("app_update", Context.MODE_PRIVATE)
-        val id = prefs.getLong("download_id", -1L)
+        val id = prefs.getLong("download_id", prefs.getLong("install_id", -1L))
         if (id <= 0) return
         val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         try {
@@ -74,12 +74,9 @@ class AppUpdater(private val context: Context) {
                 }
                 val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
                 if (status == DownloadManager.STATUS_SUCCESSFUL) {
-                    prefs.edit().remove("download_id").apply()
+                    prefs.edit().remove("download_id").putLong("install_id", id).apply()
                     val uri = dm.getUriForDownloadedFile(id) ?: return
-                    context.startActivity(Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(uri, "application/vnd.android.package-archive")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    })
+                    openInstaller(uri)
                     onMessage("更新安装包已下载，已打开系统安装界面")
                 } else if (status == DownloadManager.STATUS_FAILED) {
                     prefs.edit().remove("download_id").apply()
@@ -91,6 +88,18 @@ class AppUpdater(private val context: Context) {
         } catch (e: Exception) {
             onMessage("恢复更新任务失败：" + (e.message ?: "未知错误"))
         }
+    }
+
+    private fun openInstaller(uri: Uri) {
+        if (android.os.Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
+            context.startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:" + context.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            throw IllegalStateException("请允许此应用安装更新，然后再次打开 App 继续安装")
+        }
+        context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        })
     }
 
     private fun compareVersions(a: String, b: String): Int {
@@ -136,10 +145,8 @@ class AppUpdater(private val context: Context) {
                         return
                     }
                     try {
-                        context.startActivity(Intent(Intent.ACTION_VIEW).apply {
-                            setDataAndType(fileUri, "application/vnd.android.package-archive")
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        })
+                        context.getSharedPreferences("app_update", Context.MODE_PRIVATE).edit().putLong("install_id", id).apply()
+                        openInstaller(fileUri)
                         onMessage("安装包已下载，请确认系统安装提示")
                     } catch (e: Exception) {
                         onMessage("无法打开系统安装界面：" + (e.message ?: "安装权限不足"))
