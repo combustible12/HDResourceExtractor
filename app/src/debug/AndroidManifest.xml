@@ -1,29 +1,3 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
-
-    <application>
-        <activity
-            android:name=".MainActivity"
-            android:enabled="false"
-            tools:replace="android:enabled" />
-
-        <activity
-            android:name=".MainActivityV10"
-            android:enabled="false" />
-
-        <activity
-            android:name=".MainActivityV13"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/plain" />
-            </intent-filter>
-        </activity>
-    </application>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Debug builds use the same MainActivity launcher as production. -->
 </manifest>
