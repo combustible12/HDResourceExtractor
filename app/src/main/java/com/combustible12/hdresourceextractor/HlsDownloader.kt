@@ -20,6 +20,7 @@ class HlsDownloader(private val context: Context) {
         Thread {
             val prefs = context.getSharedPreferences("hls_download_progress", Context.MODE_PRIVATE)
             val key = "media_" + url.hashCode().toString()
+            prefs.edit().putString("pending_url", url).putString("pending_agent", userAgent).putString("pending_referer", referer).putString("pending_cookie", cookie).apply()
             var target: android.net.Uri? = null
             try {
                 val segments = resolveSegments(url, userAgent, referer, cookie, 0)
@@ -112,12 +113,22 @@ class HlsDownloader(private val context: Context) {
                 prefs.edit().remove(key + "_uri").remove(key + "_index")
                     .remove(key + "_bytes").commit()
                 DownloadedMedia(context).saved(url, uri)
+                prefs.edit().remove("pending_url").remove("pending_agent").remove("pending_referer").remove("pending_cookie").apply()
                 callback(true, "HLS 视频已保存至 Movies/HDResourceExtractor（TS 原始封装）")
             } catch (e: Exception) {
                 // Keep the pending file and segment position to resume on the next request.
                 callback(false, "HLS 下载中断：可再次点下载继续；" + (e.message ?: "未知错误"))
             }
         }.start()
+    }
+
+    fun resumePending(callback: (Boolean, String) -> Unit) {
+        val prefs = context.getSharedPreferences("hls_download_progress", Context.MODE_PRIVATE)
+        val url = prefs.getString("pending_url", "").orEmpty()
+        if (url.isBlank()) return
+        download(url, prefs.getString("pending_agent", "").orEmpty(),
+            prefs.getString("pending_referer", "").orEmpty(),
+            prefs.getString("pending_cookie", "").orEmpty(), callback)
     }
 
     private fun resolveSegments(
