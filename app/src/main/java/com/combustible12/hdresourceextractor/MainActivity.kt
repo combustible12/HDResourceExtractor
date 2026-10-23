@@ -54,11 +54,13 @@ class MainActivity : AppCompatActivity() {
     private val xhsCandidates = linkedMapOf<String, String>()
     private val xhsCandidateScores = mutableMapOf<String, Int>()
     private val structuredMedia = linkedSetOf<String>()
+    private val structuredOtherImages = linkedSetOf<String>()
     private val handler = Handler(Looper.getMainLooper())
 
     private var pendingSharedText: String = ""
     private var currentPageUrl: String = ""
     private var isXhsSession: Boolean = false
+    private var isDouyinSession: Boolean = false
     private var xhsFallbackShown: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -552,8 +554,8 @@ class MainActivity : AppCompatActivity() {
                     currentPageUrl = url
                 }
 
-                if (isXhsSession) {
-                    statusText.text = "正在识别小红书正文图片…"
+                if (isXhsSession || isDouyinSession) {
+                    statusText.text = "正在识别正文媒体资源…"
                     scanXhsNoteResources(silent = true)
                     scanStructuredNote()
                     handler.postDelayed({ scanXhsNoteResources(silent = true) }, 800)
@@ -635,6 +637,7 @@ class MainActivity : AppCompatActivity() {
         urlInput.setText(url)
         currentPageUrl = url
         isXhsSession = isXhsUrl(url)
+        isDouyinSession = url.contains("douyin.com", true) || url.contains("iesdouyin.com", true)
         xhsFallbackShown = false
 
         synchronized(resources) { resources.clear() }
@@ -643,6 +646,7 @@ class MainActivity : AppCompatActivity() {
             xhsCandidateScores.clear()
         }
         synchronized(structuredMedia) { structuredMedia.clear() }
+        synchronized(structuredOtherImages) { structuredOtherImages.clear() }
         visibleResources.clear()
         renderResults()
 
@@ -657,8 +661,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun scanCurrentPage() {
-        if (isXhsSession) {
-            statusText.text = "正在重新识别小红书正文图片…"
+        if (isXhsSession || isDouyinSession) {
+            statusText.text = "正在重新识别媒体资源…"
             scanXhsNoteResources(silent = true)
             scanStructuredNote()
             handler.postDelayed({ finalizeXhsResults(allowFallback = true) }, 900)
@@ -705,13 +709,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val sharedDouyinParser by lazy {
+        assets.open("douyin_parser.js").bufferedReader(Charsets.UTF_8).use { it.readText() }
+    }
+
     private val sharedXhsParser by lazy {
         assets.open("xhs_parser.js").bufferedReader(Charsets.UTF_8).use { it.readText() }
     }
 
     private fun scanStructuredNote() {
-        if (!isXhsSession) return
-        val script = sharedXhsParser + "\n;try{HDExtractor.structured(JSON.stringify(window.HDXhsParser.extract()));}catch(e){}"
+        if (!isXhsSession && !isDouyinSession) return
+        val script = if (isDouyinSession) {
+            sharedDouyinParser + "\n;try{HDExtractor.structured(JSON.stringify(window.HDDouyinParser.extract()));}catch(e){}"
+        } else {
+            sharedXhsParser + "\n;try{HDExtractor.structured(JSON.stringify(window.HDXhsParser.extract()));}catch(e){}"
+        }
         webView.evaluateJavascript(script, null)
     }
 
@@ -919,7 +931,7 @@ class MainActivity : AppCompatActivity() {
     private fun finalizeXhsResults(allowFallback: Boolean) {
         val filtered = synchronized(xhsCandidates) {
             xhsCandidates.values.toList()
-        } + synchronized(structuredMedia) { structuredMedia.toList() }
+        } + synchronized(structuredOtherImages) { structuredOtherImages.toList() } + synchronized(structuredMedia) { structuredMedia.toList() }
 
         if (filtered.isNotEmpty()) {
             runOnUiThread {
@@ -1056,9 +1068,13 @@ class MainActivity : AppCompatActivity() {
                     val image = images.optJSONObject(i) ?: continue
                     val url = image.optString("originalUrl")
                     if (url.startsWith("https://")) {
-                        collectXhsCandidate(
-                            url, image.optInt("width"), image.optInt("height"), "structured"
-                        )
+                        if (isDouyinSession) {
+                            synchronized(structuredOtherImages) { structuredOtherImages.add(url) }
+                        } else {
+                            collectXhsCandidate(
+                                url, image.optInt("width"), image.optInt("height"), "structured"
+                            )
+                        }
                     }
                 }
             }
