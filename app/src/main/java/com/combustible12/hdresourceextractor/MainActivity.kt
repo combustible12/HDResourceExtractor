@@ -831,7 +831,7 @@ class MainActivity : AppCompatActivity() {
     ): Boolean {
         val lower = url.lowercase(Locale.US)
         if (!lower.startsWith("http://") && !lower.startsWith("https://")) return false
-        if (!lower.contains("xhscdn.com")) return false
+        if (!lower.contains("xhscdn.com") && !lower.contains("ci.xiaohongshu.com")) return false
 
         val host = try {
             Uri.parse(url).host?.lowercase(Locale.US).orEmpty()
@@ -854,7 +854,7 @@ class MainActivity : AppCompatActivity() {
         ) return false
 
         val mainImageHost = host.contains("sns-webpic") || host.contains("sns-img")
-        if (!mainImageHost) return false
+        if (!mainImageHost && source != "structured") return false
 
         val looksLikeNoteAsset =
             path.contains("/1040g") ||
@@ -868,7 +868,7 @@ class MainActivity : AppCompatActivity() {
             maxOf(width, height) >= 700 &&
             minOf(width, height) >= 350
 
-        return looksLikeNoteAsset || largeDomImage
+        return source == "structured" || looksLikeNoteAsset || largeDomImage
     }
 
     private fun canonicalXhsKey(url: String): String {
