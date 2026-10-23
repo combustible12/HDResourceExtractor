@@ -216,11 +216,12 @@ class DashDownloader(private val context: Context) {
                     extractor.getTrackFormat(n).getString(MediaFormat.KEY_MIME)?.startsWith(if (i == 0) "video/" else "audio/") == true
                 } ?: error(if (i == 0) "视频轨无法解码" else "音频轨无法解码")
             }
-            muxer = MediaMuxer(destination.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val writer = MediaMuxer(destination.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            muxer = writer
             val outputIndexes = extractors.mapIndexed { i, extractor ->
-                muxer.addTrack(extractor.getTrackFormat(indexes[i]))
+                writer.addTrack(extractor.getTrackFormat(indexes[i]))
             }
-            muxer.start()
+            writer.start()
             val buffer = ByteBuffer.allocateDirect(16 * 1024 * 1024)
             val info = MediaCodec.BufferInfo()
             extractors.forEachIndexed { i, extractor ->
@@ -231,11 +232,11 @@ class DashDownloader(private val context: Context) {
                     if (size < 0) break
                     if (size > buffer.capacity()) error("媒体样本超出缓冲区")
                     info.set(0, size, extractor.sampleTime, extractor.sampleFlags)
-                    muxer.writeSampleData(outputIndexes[i], buffer, info)
+                    writer.writeSampleData(outputIndexes[i], buffer, info)
                     extractor.advance()
                 }
             }
-            muxer.stop()
+            writer.stop()
         } finally {
             try { muxer?.release() } catch (_: Exception) {}
             extractors.forEach { try { it.release() } catch (_: Exception) {} }
