@@ -1265,38 +1265,24 @@ class MainActivity : AppCompatActivity() {
         }
 
         val path = url.substringBefore('?').substringBefore('#').lowercase(Locale.US)
-        if (path.endsWith(".m3u8")) {
-            val task = taskStore.add(url, "HLS")
-            taskStore.update(task.id, "running", detail = "正在下载")
-            HlsDownloader(this).download(
-                url = url,
-                userAgent = webView.settings.userAgentString.orEmpty(),
-                referer = currentPageUrl,
-                cookie = CookieManager.getInstance().getCookie(url).orEmpty()
-            ) { success, message ->
-                taskStore.update(task.id, if (success) "completed" else "failed", if (success) 100 else null, message)
-                runOnUiThread {
-                    statusText.text = message
-                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        if (path.endsWith(".m3u8") || path.endsWith(".mpd")) {
+            val isDash = path.endsWith(".mpd")
+            val task = taskStore.add(url, if (isDash) "DASH" else "HLS")
+            val agent = webView.settings.userAgentString.orEmpty()
+            val referer = currentPageUrl
+            val cookie = CookieManager.getInstance().getCookie(url).orEmpty()
+            SegmentTaskQueue.get(this).submit(task.id) { control, progress ->
+                val callback: (Boolean, String) -> Unit = { success, message ->
+                    if (!success) throw IllegalStateException(message)
+                    progress(99, "正在完成保存")
+                }
+                if (isDash) {
+                    DashDownloader(this).download(url, agent, referer, cookie, callback, control, progress)
+                } else {
+                    HlsDownloader(this).download(url, agent, referer, cookie, callback, control, progress)
                 }
             }
-            return true
-        }
-        if (path.endsWith(".mpd")) {
-            val task = taskStore.add(url, "DASH")
-            taskStore.update(task.id, "running", detail = "正在下载")
-            DashDownloader(this).download(
-                url = url,
-                userAgent = webView.settings.userAgentString.orEmpty(),
-                referer = currentPageUrl,
-                cookie = CookieManager.getInstance().getCookie(url).orEmpty()
-            ) { success, message ->
-                taskStore.update(task.id, if (success) "completed" else "failed", if (success) 100 else null, message)
-                runOnUiThread {
-                    statusText.text = message
-                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-                }
-            }
+            if (showToast) Toast.makeText(this, "已加入下载队列", Toast.LENGTH_SHORT).show()
             return true
         }
 
@@ -1367,74 +1353,88 @@ class MainActivity : AppCompatActivity() {
 
     private fun showDownloadTasks() {
         val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        val tasks = taskStore.all()
+        val queue = SegmentTaskQueue.get(this)
+        val dialog = android.app.AlertDialog.Builder(this).setTitle("下载任务")
+            .setPositiveButton("关闭", null).create()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(8), dp(12), dp(8))
         }
-        val scroller = ScrollView(this)
-        scroller.addView(root)
-        if (tasks.isEmpty()) {
-            root.addView(TextView(this).apply { text = "暂无下载任务" })
-        }
-        tasks.forEach { task ->
-            var status = task.status
-            var detail = task.detail
-            if (task.kind == "SYSTEM" && task.systemId > 0 && status != "cancelled") {
-                try {
-                    manager.query(DownloadManager.Query().setFilterById(task.systemId))?.use { cursor ->
-                        if (cursor.moveToFirst()) {
-                            val code = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-                            status = when (code) {
-                                DownloadManager.STATUS_SUCCESSFUL -> "completed"
-                                DownloadManager.STATUS_FAILED -> "failed"
-                                DownloadManager.STATUS_RUNNING -> "running"
-                                DownloadManager.STATUS_PAUSED -> "paused"
-                                else -> "queued"
+        val scroller = ScrollView(this).apply { addView(root) }
+        dialog.setView(scroller)
+        val refresh = object : Runnable {
+            override fun run() {
+                if (!dialog.isShowing) return
+                root.removeAllViews()
+                val tasks = taskStore.all()
+                if (tasks.isEmpty()) root.addView(TextView(this@MainActivity).apply { text = "暂无下载任务" })
+                tasks.forEach { task ->
+                    var status = task.status
+                    var progress = task.progress
+                    var detail = task.detail
+                    if (task.kind == "SYSTEM" && task.systemId > 0 && status !in listOf("cancelled", "completed")) {
+                        try {
+                            manager.query(DownloadManager.Query().setFilterById(task.systemId))?.use { cursor ->
+                                if (cursor.moveToFirst()) {
+                                    val code = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                                    status = when (code) {
+                                        DownloadManager.STATUS_SUCCESSFUL -> "completed"
+                                        DownloadManager.STATUS_FAILED -> "failed"
+                                        DownloadManager.STATUS_RUNNING -> "running"
+                                        DownloadManager.STATUS_PAUSED -> "paused"
+                                        else -> "queued"
+                                    }
+                                    val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                                    val done = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                                    if (total > 0) progress = (done * 100 / total).toInt().coerceIn(0, 100)
+                                    taskStore.update(task.id, status, progress, detail)
+                                }
                             }
-                            val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-                            val done = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-                            detail = if (total > 0) "${done * 100 / total}%" else detail
-                            if (status != task.status) taskStore.update(task.id, status, detail = detail)
+                        } catch (_: Exception) {}
+                    }
+                    root.addView(TextView(this@MainActivity).apply {
+                        text = "${task.kind} · ${status} · ${progress}%\n${detail}\n${task.url.take(90)}"
+                        textSize = 13f
+                        setPadding(0, dp(10), 0, dp(4))
+                    })
+                    val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
+                    fun button(label: String, action: () -> Unit) {
+                        row.addView(Button(this@MainActivity).apply {
+                            text = label
+                            isAllCaps = false
+                            textSize = 12f
+                            minWidth = 0
+                            minimumWidth = 0
+                            setOnClickListener { action(); handler.post { run() } }
+                        }, LinearLayout.LayoutParams(0, dp(44), 1f))
+                    }
+                    if (task.kind != "SYSTEM" && status in listOf("queued", "running")) {
+                        button("暂停") { queue.pause(task.id) }
+                        button("取消") { queue.cancel(task.id) }
+                    } else if (task.kind != "SYSTEM" && status == "paused") {
+                        button("恢复") {
+                            if (!queue.resume(task.id)) {
+                                Toast.makeText(this@MainActivity, "任务已中断，请重新下载", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        button("取消") { queue.cancel(task.id) }
+                    } else {
+                        button("重试") { enqueueDownload(task.url, 0, true) }
+                        button(if (task.kind == "SYSTEM" && status in listOf("queued", "running", "paused")) "取消" else "移除") {
+                            if (task.kind == "SYSTEM" && task.systemId > 0 && status in listOf("queued", "running", "paused")) {
+                                manager.remove(task.systemId)
+                                taskStore.update(task.id, "cancelled", detail = "已取消")
+                            } else taskStore.delete(task.id)
                         }
                     }
-                } catch (_: Exception) {}
-            }
-            val title = TextView(this).apply {
-                text = "${task.kind} · ${status} · ${detail}\n${task.url.take(100)}"
-                textSize = 13f
-                setPadding(0, dp(10), 0, dp(4))
-            }
-            root.addView(title)
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            val retry = Button(this).apply {
-                text = "重新下载"
-                isAllCaps = false
-                setOnClickListener {
-                    enqueueDownload(task.url, 0, true)
-                    Toast.makeText(this@MainActivity, "已提交重试，请刷新任务列表", Toast.LENGTH_SHORT).show()
+                    root.addView(row)
                 }
+                handler.postDelayed(this, 1000L)
             }
-            row.addView(retry, LinearLayout.LayoutParams(0, dp(44), 1f))
-            val remove = Button(this).apply {
-                text = if (task.kind == "SYSTEM" && status in listOf("queued", "running", "paused")) "取消任务" else "移除记录"
-                isAllCaps = false
-                setOnClickListener {
-                    if (task.kind == "SYSTEM" && task.systemId > 0 && status in listOf("queued", "running", "paused")) {
-                        manager.remove(task.systemId)
-                        taskStore.update(task.id, "cancelled", detail = "用户取消")
-                    } else if (task.kind != "SYSTEM" && status == "running") {
-                        Toast.makeText(this@MainActivity, "分段任务暂不支持中途取消", Toast.LENGTH_SHORT).show()
-                        return@setOnClickListener
-                    } else taskStore.delete(task.id)
-                    showDownloadTasks()
-                }
-            }
-            row.addView(remove, LinearLayout.LayoutParams(0, dp(44), 1f))
-            root.addView(row)
         }
-        android.app.AlertDialog.Builder(this).setTitle("下载任务（最近200条）")
-            .setView(scroller).setPositiveButton("关闭", null).show()
+        dialog.setOnDismissListener { handler.removeCallbacks(refresh) }
+        dialog.show()
+        handler.post(refresh)
     }
 
     private fun guessExtension(url: String): String {
