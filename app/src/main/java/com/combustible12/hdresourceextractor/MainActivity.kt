@@ -323,8 +323,14 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener {
                     val prefs = getSharedPreferences("media_downloads", Context.MODE_PRIVATE)
                     val url = prefs.getString("latest_url", "").orEmpty()
-                    if (url.isNotBlank()) enqueueDownload(url, 0, true)
-                    else statusText.text = "暂无下载记录"
+                    if (url.isNotBlank() && downloadedMedia.state(url) == "new") {
+                        enqueueDownload(url, 0, true)
+                    } else {
+                        val hls = getSharedPreferences("hls_download_progress", Context.MODE_PRIVATE)
+                        val pendingUrl = hls.getString("pending_url", "").orEmpty()
+                        if (pendingUrl.isNotBlank()) enqueueDownload(pendingUrl, 0, true)
+                        else statusText.text = if (url.isNotBlank()) "最近的资源已经下载或仍在下载" else "暂无可恢复的下载任务"
+                    }
                 }
             }
             val cancel = makeMainButton("取消下载", false).apply {
