@@ -340,7 +340,18 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             addView(retry, LinearLayout.LayoutParams(0, dp(42), 1f))
+            val pauseButton = makeMainButton("暂停分段", false).apply {
+                setOnClickListener {
+                    val prefs = getSharedPreferences("hls_download_progress", Context.MODE_PRIVATE)
+                    val url = prefs.getString("pending_url", "").orEmpty()
+                    if (url.isNotBlank()) {
+                        HlsDownloader(this@MainActivity).pause(url)
+                        statusText.text = "当前片段结束后暂停，进度保留"
+                    } else statusText.text = "没有分段下载任务"
+                }
+            }
             addView(cancel, LinearLayout.LayoutParams(0, dp(42), 1f))
+            addView(pauseButton, LinearLayout.LayoutParams(0, dp(42), 1f))
         }
         foreground.addView(
             downloadActions,
