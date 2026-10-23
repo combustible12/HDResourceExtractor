@@ -73,12 +73,15 @@ class ResumableVideo(private val context: Context) {
                     if (written > 0) connection.setRequestProperty("Range", "bytes=$written-")
                     try {
                         val status = connection.responseCode
-                        if (status !in 200..299) error("HTTP $status")
+                        if (status != 200 && status != 206) error("HTTP $status")
                         if (written > 0 && status == 206) {
                             val actual = Regex("""bytes\s+(\d+)-""").find(connection.getHeaderField("Content-Range").orEmpty())
                                 ?.groupValues?.getOrNull(1)?.toLongOrNull()
                             if (actual != written) error("服务器续传范围不匹配")
-                        } else if (written > 0 && status == 200) written = 0L
+                        } else if (written > 0 && status == 200) {
+                            written = 0L
+                            prefs.edit().putLong(k + "_written", 0L).commit()
+                        }
                         val total = connection.getHeaderField("Content-Range")?.substringAfterLast("/")?.toLongOrNull()
                             ?: connection.contentLengthLong.takeIf { it > 0 }?.plus(written)
                         resolver.openFileDescriptor(target, "rw")?.use { fd ->
