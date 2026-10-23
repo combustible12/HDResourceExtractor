@@ -18,58 +18,101 @@ class HlsDownloader(private val context: Context) {
         callback: (Boolean, String) -> Unit
     ) {
         Thread {
+            val prefs = context.getSharedPreferences("hls_download_progress", Context.MODE_PRIVATE)
+            val key = "media_" + url.hashCode().toString()
             var target: android.net.Uri? = null
             try {
                 val segments = resolveSegments(url, userAgent, referer, cookie, 0)
-                if (segments.isEmpty()) throw IllegalArgumentException("HLS 播放列表没有媒体片段")
-                val values = ContentValues().apply {
-                    put(MediaStore.Video.Media.DISPLAY_NAME, "hd_hls_${System.currentTimeMillis()}.ts")
-                    put(MediaStore.Video.Media.MIME_TYPE, "video/mp2t")
-                    if (Build.VERSION.SDK_INT >= 29) {
-                        put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/HDResourceExtractor")
-                        put(MediaStore.Video.Media.IS_PENDING, 1)
+                if (segments.isEmpty()) error("HLS 播放列表没有媒体片段")
+                val resolver = context.contentResolver
+                var savedIndex = prefs.getInt(key + "_index", 0).coerceIn(0, segments.size)
+                var savedBytes = prefs.getLong(key + "_bytes", 0L).coerceAtLeast(0L)
+                target = prefs.getString(key + "_uri", null)?.let(android.net.Uri::parse)
+                if (target != null) {
+                    val valid = try {
+                        resolver.openFileDescriptor(target, "rw")?.use {
+                            it.statSize >= savedBytes
+                        } ?: false
+                    } catch (_: Exception) { false }
+                    if (!valid) {
+                        target = null
+                        savedIndex = 0
+                        savedBytes = 0
                     }
                 }
-                val collection = if (Build.VERSION.SDK_INT >= 29) {
-                    MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                } else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-                target = context.contentResolver.insert(collection, values)
-                    ?: error("无法创建视频文件，请检查手机存储空间")
-                context.contentResolver.openOutputStream(target, "w")?.use { output ->
-                    segments.forEachIndexed { index, segment ->
-                        var completed = false
-                        for (attempt in 1..3) {
-                            try {
-                                val conn = connect(segment, userAgent, referer, cookie)
-                                try {
-                                    if (conn.responseCode !in 200..299) error("片段 HTTP ${conn.responseCode}")
-                                    val temp = java.io.File.createTempFile("hls_segment_", ".ts", context.cacheDir)
-                                    try {
-                                        conn.inputStream.use { input -> temp.outputStream().use { input.copyTo(it, 128 * 1024) } }
-                                        if (temp.length() == 0L) error("片段为空")
-                                        temp.inputStream().use { it.copyTo(output, 128 * 1024) }
-                                        completed = true
-                                    } finally { temp.delete() }
-                                    break
-                                } finally { conn.disconnect() }
-                            } catch (e: Exception) {
-                                if (attempt == 3) throw IllegalStateException(
-                                    "片段 ${index+1}/${segments.size} 下载失败：" + e.message
-                                )
-                            }
+                if (target == null) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Video.Media.DISPLAY_NAME, "hd_hls_${System.currentTimeMillis()}.ts")
+                        put(MediaStore.Video.Media.MIME_TYPE, "video/mp2t")
+                        if (Build.VERSION.SDK_INT >= 29) {
+                            put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/HDResourceExtractor")
+                            put(MediaStore.Video.Media.IS_PENDING, 1)
                         }
-                        if (!completed) error("片段下载不完整")
+                    }
+                    val collection = if (Build.VERSION.SDK_INT >= 29) {
+                        MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                    } else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                    target = resolver.insert(collection, values)
+                        ?: error("无法创建视频文件，请检查手机存储空间")
+                    savedIndex = 0
+                    savedBytes = 0
+                    prefs.edit().putString(key + "_uri", target.toString())
+                        .putInt(key + "_index", 0).putLong(key + "_bytes", 0L).commit()
+                }
+                val uri = target ?: error("无法保存媒体")
+                resolver.openFileDescriptor(uri, "rw")?.use { descriptor ->
+                    java.io.FileOutputStream(descriptor.fileDescriptor).use { output ->
+                        output.channel.truncate(savedBytes)
+                        output.channel.position(savedBytes)
+                        segments.forEachIndexed { index, segment ->
+                            if (index < savedIndex) return@forEachIndexed
+                            val temp = java.io.File.createTempFile("hls_segment_", ".ts", context.cacheDir)
+                            try {
+                                var downloaded = false
+                                for (attempt in 1..3) {
+                                    try {
+                                        val conn = connect(segment, userAgent, referer, cookie)
+                                        try {
+                                            if (conn.responseCode !in 200..299) {
+                                                error("片段 HTTP ${conn.responseCode}")
+                                            }
+                                            temp.outputStream().use { fileOutput ->
+                                                conn.inputStream.use { it.copyTo(fileOutput, 128 * 1024) }
+                                            }
+                                            if (temp.length() <= 0) error("空片段")
+                                            downloaded = true
+                                            break
+                                        } finally { conn.disconnect() }
+                                    } catch (e: Exception) {
+                                        temp.delete()
+                                        if (attempt == 3) throw IllegalStateException(
+                                            "片段 ${index + 1}/${segments.size} 失败：" + e.message
+                                        )
+                                    }
+                                }
+                                if (!downloaded) error("片段下载失败")
+                                temp.inputStream().use { it.copyTo(output, 128 * 1024) }
+                                output.flush()
+                                savedBytes = output.channel.position()
+                                prefs.edit()
+                                    .putInt(key + "_index", index + 1)
+                                    .putLong(key + "_bytes", savedBytes)
+                                    .commit()
+                            } finally { temp.delete() }
+                        }
                     }
                 } ?: error("不能打开媒体存储")
                 if (Build.VERSION.SDK_INT >= 29) {
-                    context.contentResolver.update(target, ContentValues().apply {
+                    resolver.update(uri, ContentValues().apply {
                         put(MediaStore.Video.Media.IS_PENDING, 0)
                     }, null, null)
                 }
+                prefs.edit().remove(key + "_uri").remove(key + "_index")
+                    .remove(key + "_bytes").commit()
                 callback(true, "HLS 视频已保存至 Movies/HDResourceExtractor（TS 原始封装）")
             } catch (e: Exception) {
-                target?.let { context.contentResolver.delete(it, null, null) }
-                callback(false, "HLS 下载失败：" + (e.message ?: "未知错误"))
+                // Keep the pending file and segment position to resume on the next request.
+                callback(false, "HLS 下载中断：可再次点下载继续；" + (e.message ?: "未知错误"))
             }
         }.start()
     }
