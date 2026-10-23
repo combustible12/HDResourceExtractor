@@ -111,7 +111,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.rgb(247, 248, 250))
             // Apply the safe fallback immediately. Some devices never dispatch the
             // insets callback, so relying on the listener alone can leave the title at y=0.
-            setPadding(dp(14), dp(40), dp(14), dp(10))
+            setPadding(dp(14), dp(63), dp(14), dp(10))
         }
 
         ViewCompat.setOnApplyWindowInsetsListener(foreground) { view, insets ->
@@ -124,7 +124,7 @@ class MainActivity : AppCompatActivity() {
             val safeTopInset = maxOf(systemInsets.top, dp(28))
             view.setPadding(
                 dp(14) + systemInsets.left,
-                dp(12) + safeTopInset,
+                dp(35) + safeTopInset,
                 dp(14) + systemInsets.right,
                 dp(10) + systemInsets.bottom
             )
