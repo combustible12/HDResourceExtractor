@@ -58,8 +58,8 @@ class SegmentTaskQueue private constructor(context: Context) {
                 synchronized(this) { c.check(); store.update(id, "completed", 100, "已下载保存") }
             } catch (e: Exception) {
                 synchronized(this) {
-                    if (c.retry) store.update(id, "queued", detail = "等待系统恢复")
-                    else if (c.cancelled.get()) store.update(id, "cancelled", detail = "已取消")
+                    if (c.cancelled.get()) store.update(id, "cancelled", detail = "已取消")
+                    else if (c.retry) store.update(id, "queued", detail = "等待系统恢复")
                     else if (c.paused.get()) store.update(id, "paused", detail = "已暂停，保留续传缓存")
                     else store.update(id, "failed", detail = e.message ?: "下载失败，缓存已保留")
                 }
@@ -76,12 +76,13 @@ class SegmentTaskQueue private constructor(context: Context) {
         resumeAfterExit.remove(id)
         if (store.get(id)?.status !in listOf("queued", "running")) return
         if (controls[id]?.committed == true) return
+        controls[id]?.retry = false
         controls[id]?.stop(true)
         store.update(id, "paused", detail = "已暂停，保留续传缓存")
     }
     @Synchronized fun cancel(id: String) {
         if (store.get(id)?.status == "completed" || controls[id]?.committed == true) return
-        resumeAfterExit.remove(id); controls[id]?.stop(false)
+        resumeAfterExit.remove(id); controls[id]?.retry = false; controls[id]?.stop(false)
         store.update(id, "cancelled", detail = "已取消")
         if (!controls.containsKey(id)) store.get(id)?.let { DownloadCache.clear(app, it.url) }
     }
@@ -93,7 +94,9 @@ class SegmentTaskQueue private constructor(context: Context) {
         return true
     }
     @Synchronized fun suspendForSystem() {
-        controls.values.forEach { if (!it.committed) { it.retry = true; it.stop(true) } }
+        controls.forEach { (id, c) ->
+            if (!c.committed && store.get(id)?.status in listOf("queued", "running")) { c.retry = true; c.stop(true) }
+        }
     }
     companion object {
         @Volatile private var instance: SegmentTaskQueue? = null

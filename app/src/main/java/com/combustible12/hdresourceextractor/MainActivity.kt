@@ -1246,6 +1246,7 @@ class MainActivity : AppCompatActivity() {
                 requestPermissions(arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE), 103)
                 error("请允许存储权限后再次下载")
             }
+            check(taskStore.all().none { it.status == "cancelled" && ResourceIdentity.of(it.url) == ResourceIdentity.of(url) && SegmentTaskQueue.get(this).isActive(it.id) }) { "正在取消旧任务，请稍后重试" }
             check(!MediaPublisher.saved(this, url)) { "此资源已下载保存" }
             val path = Uri.parse(url).path.orEmpty().lowercase(Locale.US)
             val kind = when { path.endsWith(".mpd") -> "DASH"; path.endsWith(".m3u8") -> "HLS"; else -> "FILE" }
