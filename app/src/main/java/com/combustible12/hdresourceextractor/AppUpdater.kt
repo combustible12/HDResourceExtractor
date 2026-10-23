@@ -6,9 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
-import android.os.Build
 import android.os.Environment
-import android.widget.Toast
 import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import org.json.JSONObject
@@ -82,7 +80,7 @@ class AppUpdater(private val context: Context) {
                 .setDestinationInExternalFilesDir(
                     context, Environment.DIRECTORY_DOWNLOADS, "HDResourceExtractor-update.apk"
                 )
-            val id = dm.enqueue(request)
+            var id = -1L
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(ctx: Context?, intent: Intent?) {
                     if (intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) != id) return
@@ -117,6 +115,12 @@ class AppUpdater(private val context: Context) {
                 context, receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
                 ContextCompat.RECEIVER_EXPORTED
             )
+            try {
+                id = dm.enqueue(request)
+            } catch (e: Exception) {
+                context.unregisterReceiver(receiver)
+                throw e
+            }
         } catch (e: Exception) {
             onMessage("下载启动失败：" + (e.message ?: "未知错误"))
         }
