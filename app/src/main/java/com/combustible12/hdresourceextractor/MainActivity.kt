@@ -59,6 +59,11 @@ class MainActivity : AppCompatActivity() {
     private val activeSegmentDownloads = mutableSetOf<String>()
     private val downloadedMedia by lazy { DownloadedMedia(this) }
 
+    private val downloadRefresh = object : Runnable {
+        override fun run() {
+            if (::resultsContainer.isInitialized && !isFinishing) renderResults()
+        }
+    }
     private var pendingSharedText: String = ""
     private var currentPageUrl: String = ""
     private var isXhsSession: Boolean = false
@@ -387,6 +392,10 @@ class MainActivity : AppCompatActivity() {
 
         resultsContainer.removeAllViews()
         val snapshot = visibleResources.toList()
+        handler.removeCallbacks(downloadRefresh)
+        if (snapshot.any { downloadedMedia.state(it) == "pending" }) {
+            handler.postDelayed(downloadRefresh, 2500)
+        }
 
         resultTitle.text = when {
             snapshot.isEmpty() -> "提取结果"
@@ -529,6 +538,14 @@ class MainActivity : AppCompatActivity() {
             )
         )
 
+        if (downloadedMedia.state(url) == "pending") {
+            card.addView(makeCardAction("取消该资源下载") {
+                if (downloadedMedia.cancel(url)) {
+                    statusText.text = "已取消该资源下载"
+                    renderResults()
+                }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)))
+        }
         return card
     }
 
