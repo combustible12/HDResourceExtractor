@@ -58,6 +58,15 @@ class DownloadedMedia(private val context: Context) {
     } catch (_: Exception) { false }
 
     @Synchronized
+    fun cancel(url: String): Boolean {
+        val id = prefs.getLong(key(url) + "_id", -1L)
+        if (id <= 0L) return false
+        manager.remove(id)
+        prefs.edit().remove(key(url) + "_id").apply()
+        return true
+    }
+
+    @Synchronized
     fun queue(url: String, id: Long) {
         prefs.edit().putLong(key(url) + "_id", id).remove(key(url) + "_saved").apply()
     }
