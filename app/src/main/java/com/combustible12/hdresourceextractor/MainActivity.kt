@@ -357,7 +357,14 @@ class MainActivity : AppCompatActivity() {
                         HlsDownloader(this@MainActivity).pause(url)
                         ResumableVideo(this@MainActivity).pause(url)
                         statusText.text = "当前片段结束后暂停，进度保留"
-                    } else statusText.text = "没有分段下载任务"
+                    } else {
+                        val last = getSharedPreferences("media_downloads", Context.MODE_PRIVATE)
+                            .getString("latest_url", "").orEmpty()
+                        if (last.isNotBlank()) {
+                            ResumableVideo(this@MainActivity).pause(last)
+                            statusText.text = "已请求暂停普通视频下载，进度保留"
+                        } else statusText.text = "没有可暂停的下载任务"
+                    }
                 }
             }
             addView(cancel, LinearLayout.LayoutParams(0, dp(42), 1f))
@@ -1350,6 +1357,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (path.endsWith(".mp4") || path.endsWith(".mov") || path.endsWith(".webm") || path.endsWith(".m4v")) {
+            getSharedPreferences("media_downloads", Context.MODE_PRIVATE).edit().putString("latest_url", url).remove("latest_id").apply()
             ResumableVideo(this).download(url, webView.settings.userAgentString.orEmpty(),
                 currentPageUrl, CookieManager.getInstance().getCookie(url).orEmpty()) { _, message ->
                 runOnUiThread { statusText.text = message; renderResults() }
