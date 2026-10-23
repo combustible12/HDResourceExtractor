@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import java.io.File
+import android.net.Uri
 import java.io.FileInputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -107,75 +108,68 @@ class XhsVideoDownloader(private val context: Context) {
         cookie: String,
         candidateIndex: Int
     ): File? {
-        val lowerUrl = url.lowercase()
-        if (lowerUrl.contains(".m3u8")) return null
-
-        val refererModes = if (referer.isBlank()) listOf(false) else listOf(false, true)
-        var lastCode = -1
-        var lastException: Exception? = null
-
-        for (useReferer in refererModes) {
-            var connection: HttpURLConnection? = null
-            var tempFile: File? = null
-            try {
-                connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                    instanceFollowRedirects = true
-                    connectTimeout = 15_000
-                    readTimeout = 45_000
-                    requestMethod = "GET"
-                    if (userAgent.isNotBlank()) setRequestProperty("User-Agent", userAgent)
-                    if (cookie.isNotBlank()) setRequestProperty("Cookie", cookie)
-                    if (useReferer) setRequestProperty("Referer", referer)
-                    setRequestProperty("Accept", "*/*")
-                    setRequestProperty("Accept-Encoding", "identity")
-                    connect()
-                }
-
-                lastCode = connection.responseCode
-                if (lastCode !in 200..299) continue
-
-                val mime = connection.contentType.orEmpty().substringBefore(';').lowercase()
-                if (mime.contains("mpegurl") || mime.contains("m3u")) continue
-
-                tempFile = File(
-                    context.cacheDir,
-                    "xhs_video_${System.currentTimeMillis()}_${candidateIndex}.tmp"
-                )
-                connection.inputStream.use { input ->
-                    tempFile.outputStream().use { output ->
-                        input.copyTo(output, 256 * 1024)
+        val lower = url.substringBefore('?').lowercase()
+        if (lower.endsWith(".m3u8")) throw IllegalStateException("HLS 分段视频需单独合并")
+        val temp = File(context.cacheDir, "xhs_video_" + System.currentTimeMillis() + "_" + candidateIndex + ".tmp")
+        var size = 0L
+        var total = -1L
+        try {
+            for (attempt in 1..5) {
+                var conn: HttpURLConnection? = null
+                try {
+                    conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                        instanceFollowRedirects = true
+                        connectTimeout = 20_000
+                        readTimeout = 60_000
+                        setRequestProperty("Accept-Encoding", "identity")
+                        if (userAgent.isNotBlank()) setRequestProperty("User-Agent", userAgent)
+                        if (cookie.isNotBlank()) setRequestProperty("Cookie", cookie)
+                        if (referer.isNotBlank()) setRequestProperty("Referer", referer)
+                        if (size > 0L) setRequestProperty("Range", "bytes=" + size + "-")
                     }
+                    val code = conn.responseCode
+                    if (code !in 200..299) throw IllegalStateException("HTTP " + code)
+                    val mime = conn.contentType.orEmpty().substringBefore(';').lowercase()
+                    if (mime.contains("mpegurl") || mime.contains("text/html")) {
+                        throw IllegalStateException("视频源返回网页或 HLS 播放列表")
+                    }
+                    val isResume = size > 0L && code == 206 &&
+                        conn.getHeaderField("Content-Range").orEmpty().startsWith("bytes " + size + "-")
+                    if (size > 0L && !isResume) {
+                        size = 0L
+                        total = -1L
+                    }
+                    val length = conn.contentLengthLong
+                    if (length >= 0) total = size + length
+                    java.io.FileOutputStream(temp, isResume).use { output ->
+                        conn.inputStream.use { input ->
+                            val buffer = ByteArray(128 * 1024)
+                            while (true) {
+                                val n = input.read(buffer)
+                                if (n < 0) break
+                                output.write(buffer, 0, n)
+                                size += n
+                            }
+                        }
+                    }
+                    if (total > 0 && size < total) throw IllegalStateException("连接提前中断")
+                    if (size < 128 * 1024L) throw IllegalStateException("视频文件无效")
+                    if (!hasMp4Signature(temp) && !mime.startsWith("video/")) {
+                        throw IllegalStateException("服务器返回的不是视频")
+                    }
+                    return temp
+                } catch (e: Exception) {
+                    if (attempt == 5) throw e
+                    Thread.sleep(750L * attempt)
+                } finally {
+                    conn?.disconnect()
                 }
-
-                if (tempFile.length() < 128 * 1024L) {
-                    tempFile.delete()
-                    continue
-                }
-
-                val looksLikeMp4 = hasMp4Signature(tempFile)
-                val looksLikeVideo = mime.startsWith("video/") ||
-                    mime == "application/octet-stream" ||
-                    looksLikeMp4
-
-                if (!looksLikeVideo) {
-                    tempFile.delete()
-                    continue
-                }
-
-                return tempFile
-            } catch (e: Exception) {
-                tempFile?.delete()
-                lastException = e
-            } finally {
-                connection?.disconnect()
             }
+            return null
+        } catch (e: Exception) {
+            temp.delete()
+            throw e
         }
-
-        if (lastCode >= 400) {
-            throw IllegalStateException("服务器返回 HTTP $lastCode")
-        }
-        lastException?.let { throw it }
-        return null
     }
 
     private fun hasMp4Signature(file: File): Boolean {
