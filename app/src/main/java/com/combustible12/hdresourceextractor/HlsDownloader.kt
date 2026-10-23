@@ -23,7 +23,9 @@ class HlsDownloader(private val context: Context) {
             var target: android.net.Uri? = null
             try {
                 val segments = resolveSegments(url, userAgent, referer, cookie, 0)
-                if (segments.isEmpty()) error("HLS 播放列表没有媒体片段")
+                val fmp4 = segments.firstOrNull()?.contains("__init_fmp4__") == true
+                val effectiveSegments = segments.map { it.replace("__init_fmp4__", "") }
+                if (effectiveSegments.isEmpty()) error("HLS 播放列表没有媒体片段")
                 val resolver = context.contentResolver
                 var savedIndex = prefs.getInt(key + "_index", 0).coerceIn(0, segments.size)
                 var savedBytes = prefs.getLong(key + "_bytes", 0L).coerceAtLeast(0L)
@@ -42,8 +44,8 @@ class HlsDownloader(private val context: Context) {
                 }
                 if (target == null) {
                     val values = ContentValues().apply {
-                        put(MediaStore.Video.Media.DISPLAY_NAME, "hd_hls_${System.currentTimeMillis()}.ts")
-                        put(MediaStore.Video.Media.MIME_TYPE, "video/mp2t")
+                        put(MediaStore.Video.Media.DISPLAY_NAME, "hd_hls_${System.currentTimeMillis()}.${if (fmp4) "mp4" else "ts"}")
+                        put(MediaStore.Video.Media.MIME_TYPE, if (fmp4) "video/mp4" else "video/mp2t")
                         if (Build.VERSION.SDK_INT >= 29) {
                             put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/HDResourceExtractor")
                             put(MediaStore.Video.Media.IS_PENDING, 1)
@@ -64,7 +66,7 @@ class HlsDownloader(private val context: Context) {
                     java.io.FileOutputStream(descriptor.fileDescriptor).use { output ->
                         output.channel.truncate(savedBytes)
                         output.channel.position(savedBytes)
-                        segments.forEachIndexed { index, segment ->
+                        effectiveSegments.forEachIndexed { index, segment ->
                             if (index < savedIndex) return@forEachIndexed
                             val temp = java.io.File.createTempFile("hls_segment_", ".ts", context.cacheDir)
                             try {
@@ -86,7 +88,7 @@ class HlsDownloader(private val context: Context) {
                                     } catch (e: Exception) {
                                         temp.delete()
                                         if (attempt == 3) throw IllegalStateException(
-                                            "片段 ${index + 1}/${segments.size} 失败：" + e.message
+                                            "片段 ${index + 1}/${effectiveSegments.size} 失败：" + e.message
                                         )
                                     }
                                 }
@@ -130,8 +132,8 @@ class HlsDownloader(private val context: Context) {
         if (body.contains("#EXT-X-KEY") || body.contains("#EXT-X-SESSION-KEY")) {
             error("加密 HLS 暂不支持")
         }
-        if (body.contains("#EXT-X-MAP") || body.contains("#EXT-X-BYTERANGE")) {
-            error("该 HLS 使用 fMP4 或字节范围片段，暂不支持")
+        if (body.contains("#EXT-X-BYTERANGE")) {
+            error("字节范围片段暂不支持")
         }
         val lines = body.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
         if (lines.any { it.startsWith("#EXT-X-STREAM-INF") }) {
@@ -149,7 +151,9 @@ class HlsDownloader(private val context: Context) {
         if (!lines.any { it.startsWith("#EXTINF") }) error("缺少 HLS 片段元数据")
         val segments = lines.filter { !it.startsWith("#") }.map { URL(URL(raw), it).toString() }
         if (segments.size > 10000) error("HLS 片段数量超限")
-        return segments
+        val init = Regex("""#EXT-X-MAP:URI="([^"]+)"""").find(body)?.groupValues?.getOrNull(1)
+        if (init != null && body.contains("BYTERANGE=", ignoreCase = true)) error("初始化片段字节范围暂不支持")
+        return if (init != null) listOf(URL(URL(raw), init).toString() + "__init_fmp4__") + segments else segments
     }
 
     private fun connect(raw: String, agent: String, referer: String, cookie: String): HttpURLConnection =
