@@ -333,8 +333,10 @@ class MainActivity : AppCompatActivity() {
                     val id = prefs.getLong("latest_id", -1L)
                     if (id > 0) {
                         val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-                        manager.remove(id)
+                        val url = prefs.getString("latest_url", "").orEmpty()
+                        if (url.isNotBlank()) downloadedMedia.cancel(url) else manager.remove(id)
                         prefs.edit().remove("latest_id").apply()
+                        renderResults()
                         statusText.text = "已取消最近一项系统下载任务"
                     } else statusText.text = "没有可取消的系统下载任务"
                 }
