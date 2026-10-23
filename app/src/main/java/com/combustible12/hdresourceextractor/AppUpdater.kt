@@ -60,6 +60,39 @@ class AppUpdater(private val context: Context) {
         }.start()
     }
 
+    /** Called from the home screen; recovers a completed APK even after process death. */
+    fun recoverPendingUpdate(onMessage: (String) -> Unit) {
+        val prefs = context.getSharedPreferences("app_update", Context.MODE_PRIVATE)
+        val id = prefs.getLong("download_id", -1L)
+        if (id <= 0) return
+        val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        try {
+            dm.query(DownloadManager.Query().setFilterById(id))?.use { cursor ->
+                if (!cursor.moveToFirst()) {
+                    prefs.edit().remove("download_id").apply()
+                    return
+                }
+                val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                    prefs.edit().remove("download_id").apply()
+                    val uri = dm.getUriForDownloadedFile(id) ?: return
+                    context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, "application/vnd.android.package-archive")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    })
+                    onMessage("更新安装包已下载，已打开系统安装界面")
+                } else if (status == DownloadManager.STATUS_FAILED) {
+                    prefs.edit().remove("download_id").apply()
+                    onMessage("上次更新下载失败，可再次检查升级")
+                } else {
+                    onMessage("上次更新仍在下载中，可在系统通知栏查看")
+                }
+            }
+        } catch (e: Exception) {
+            onMessage("恢复更新任务失败：" + (e.message ?: "未知错误"))
+        }
+    }
+
     private fun compareVersions(a: String, b: String): Int {
         val aa = a.split('.').map { it.toIntOrNull() ?: 0 }
         val bb = b.split('.').map { it.toIntOrNull() ?: 0 }
@@ -81,9 +114,11 @@ class AppUpdater(private val context: Context) {
                     context, Environment.DIRECTORY_DOWNLOADS, "HDResourceExtractor-update.apk"
                 )
             var id = -1L
+            context.getSharedPreferences("app_update", Context.MODE_PRIVATE).edit().putString("version", version).apply()
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(ctx: Context?, intent: Intent?) {
                     if (intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) != id) return
+                context.getSharedPreferences("app_update", Context.MODE_PRIVATE).edit().remove("download_id").apply()
                     try { context.unregisterReceiver(this) } catch (_: Exception) {}
                     val cursor = dm.query(DownloadManager.Query().setFilterById(id))
                     val succeeded = cursor?.use {
@@ -117,6 +152,7 @@ class AppUpdater(private val context: Context) {
             )
             try {
                 id = dm.enqueue(request)
+                context.getSharedPreferences("app_update", Context.MODE_PRIVATE).edit().putLong("download_id", id).apply()
             } catch (e: Exception) {
                 context.unregisterReceiver(receiver)
                 throw e
