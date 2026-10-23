@@ -49,7 +49,10 @@ class SegmentTaskQueue private constructor(context: Context) {
 
     fun pause(id: String) {
         val control = controls[id]
-        if (control != null) control.paused.set(true)
+        if (control != null) {
+            control.paused.set(true)
+            store.update(id, "paused", detail = "暂停中，保留已完成片段")
+        }
         else if (store.get(id)?.status == "queued") store.update(id, "paused", detail = "已暂停")
     }
     fun cancel(id: String) {
