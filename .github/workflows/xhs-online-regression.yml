@@ -3,7 +3,7 @@ name: XHS Online Regression
 on:
   workflow_dispatch:
   push:
-    branches: [ work/xhs-live-douyin ]
+    branches: [ main, work/xhs-live-douyin ]
   pull_request:
     branches: [ main ]
     paths:
