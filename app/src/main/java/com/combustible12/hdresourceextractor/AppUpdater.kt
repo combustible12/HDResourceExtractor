@@ -16,6 +16,11 @@ import java.net.URL
 /** Manual, user-initiated updater using published GitHub Releases APK assets. */
 class AppUpdater(private val context: Context) {
     fun checkForUpdate(onMessage: (String) -> Unit) {
+        val pending = context.getSharedPreferences("app_update", Context.MODE_PRIVATE)
+        if (pending.getLong("download_id", -1L) > 0L || pending.getLong("install_id", -1L) > 0L) {
+            recoverPendingUpdate(onMessage)
+            return
+        }
         onMessage("正在检查新版本…")
         Thread {
             try {
