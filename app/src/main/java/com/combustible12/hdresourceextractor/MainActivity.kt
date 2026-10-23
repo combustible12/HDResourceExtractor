@@ -66,8 +66,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        taskStore.all().filter { it.kind != "SYSTEM" && it.status in listOf("running", "queued") && !SegmentTaskQueue.get(this).isActive(it.id) }.forEach {
-            taskStore.update(it.id, "interrupted", detail = "应用退出，点击重试可从已保存片段继续")
+        DownloadCache.clean(this, taskStore.all().filter { it.status !in listOf("completed", "cancelled") }
+            .map { ResourceIdentity.of(it.url) }.toSet())
+        if (taskStore.all().any { it.kind != "SYSTEM" && it.status in listOf("running", "queued") }) DownloadService.start(this)
+
+        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 104)
         }
         buildUi()
         configureWebView()
@@ -1226,100 +1230,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun enqueueDownload(url: String, index: Int, showToast: Boolean): Boolean {
-        if (url.startsWith("blob:")) {
-            if (showToast) {
-                Toast.makeText(
-                    this,
-                    "blob: 资源不能直接交给系统下载",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-            return false
-        }
-
-        val path = url.substringBefore('?').substringBefore('#').lowercase(Locale.US)
-        if (path.endsWith(".m3u8") || path.endsWith(".mpd")) {
-            val isDash = path.endsWith(".mpd")
-            val task = taskStore.add(url, if (isDash) "DASH" else "HLS")
-            val agent = webView.settings.userAgentString.orEmpty()
-            val referer = currentPageUrl
-            val cookie = CookieManager.getInstance().getCookie(url).orEmpty()
-            SegmentTaskQueue.get(this).submit(task.id) { control, progress ->
-                val callback: (Boolean, String) -> Unit = { success, message ->
-                    if (!success) throw IllegalStateException(message)
-                    progress(99, "正在完成保存")
-                }
-                if (isDash) {
-                    DashDownloader(this).download(url, agent, referer, cookie, callback, control, progress)
-                } else {
-                    HlsDownloader(this).download(url, agent, referer, cookie, callback, control, progress)
-                }
-            }
-            if (showToast) Toast.makeText(this, "已加入下载队列", Toast.LENGTH_SHORT).show()
-            return true
-        }
-
         return try {
+            require(url.startsWith("http://") || url.startsWith("https://")) { "该资源不能直接下载" }
+            if (android.os.Build.VERSION.SDK_INT <= 28 && checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE), 103)
+                error("请允许存储权限后再次下载")
+            }
+            check(!MediaPublisher.saved(this, url)) { "此资源已下载保存" }
+            val path = Uri.parse(url).path.orEmpty().lowercase(Locale.US)
+            val kind = when { path.endsWith(".mpd") -> "DASH"; path.endsWith(".m3u8") -> "HLS"; else -> "FILE" }
+            val raw = Uri.parse(url).lastPathSegment.orEmpty().substringBefore('!')
             val extension = guessExtension(url)
-            val fileName = if (isXhsSession && !xhsFallbackShown) {
-                "xhs_${System.currentTimeMillis()}_${index + 1}.$extension"
-            } else {
-                val uri = Uri.parse(url)
-                val rawName = URLDecoder.decode(uri.lastPathSegment ?: "resource", "UTF-8")
-                    .substringBefore('!')
-                    .substringBefore('?')
-                    .takeIf { it.isNotBlank() }
-                    ?: "resource_${index + 1}"
-                val safeName = rawName.replace(Regex("[^A-Za-z0-9._-]"), "_").take(90)
-                if (safeName.contains('.')) safeName else "$safeName.$extension"
-            }
-
-            val request = DownloadManager.Request(Uri.parse(url))
-                .setTitle(fileName)
-                .setDescription("HDResourceExtractor")
-                .setNotificationVisibility(
-                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
-                )
-                .setDestinationInExternalPublicDir(
-                    if (isLikelyVideoUrl(url)) Environment.DIRECTORY_MOVIES
-                    else Environment.DIRECTORY_PICTURES,
-                    "HDResourceExtractor/$fileName"
-                )
-                .setAllowedOverMetered(true)
-                .setAllowedOverRoaming(true)
-
-            val userAgent = webView.settings.userAgentString
-            if (!userAgent.isNullOrBlank()) {
-                request.addRequestHeader("User-Agent", userAgent)
-            }
-
-            if (currentPageUrl.isNotBlank()) {
-                request.addRequestHeader("Referer", currentPageUrl)
-            }
-
-            CookieManager.getInstance().getCookie(url)
-                ?.takeIf { it.isNotBlank() }
-                ?.let { request.addRequestHeader("Cookie", it) }
-
-            val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            val downloadId = manager.enqueue(request)
-            taskStore.add(url, "SYSTEM", downloadId)
-            val prefs = getSharedPreferences("media_downloads", Context.MODE_PRIVATE)
-            prefs.edit().putLong("latest_id", downloadId)
-                .putString("latest_url", url).apply()
-
-            if (showToast) {
-                Toast.makeText(this, "已加入下载任务", Toast.LENGTH_SHORT).show()
-            }
+            val safe = raw.replace(Regex("[^A-Za-z0-9._-]"), "_").take(75).ifBlank { "resource" }
+            val basename = safe.substringBeforeLast('.', safe)
+            // The URL identity prevents two different resources with the same source name colliding.
+            val name = basename + "_" + ResourceIdentity.of(url).take(12) + "." + extension
+            taskStore.add(url, kind, agent = webView.settings.userAgentString.orEmpty(),
+                referer = currentPageUrl, cookie = CookieManager.getInstance().getCookie(url).orEmpty(), name = name)
+            DownloadService.start(this)
+            if (showToast) Toast.makeText(this, "已加入下载队列", Toast.LENGTH_SHORT).show()
             true
         } catch (e: Exception) {
-            if (showToast) {
-                Toast.makeText(
-                    this,
-                    "下载失败：${e.message}",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
+            if (showToast) Toast.makeText(this, e.message ?: "无法创建下载任务", Toast.LENGTH_LONG).show()
             false
         }
     }
@@ -1386,14 +1318,19 @@ class MainActivity : AppCompatActivity() {
                         button("取消") { queue.cancel(task.id) }
                     } else if (task.kind != "SYSTEM" && status == "paused") {
                         button("恢复") {
-                            if (!queue.resume(task.id)) {
-                                Toast.makeText(this@MainActivity, "任务已中断，请重新下载", Toast.LENGTH_SHORT).show()
+                            if (queue.resume(task.id)) {
+                                DownloadService.start(this@MainActivity)
+                            } else {
+                                Toast.makeText(this@MainActivity, "任务正在停止，请稍后恢复", Toast.LENGTH_SHORT).show()
                             }
                         }
                         button("取消") { queue.cancel(task.id) }
                     } else {
-                        button("重试") { enqueueDownload(task.url, 0, true) }
-                        button(if (task.kind == "SYSTEM" && status in listOf("queued", "running", "paused")) "取消" else "移除") {
+                        if (status != "completed") button("重试") {
+                            if (task.kind != "SYSTEM" && queue.resume(task.id)) DownloadService.start(this@MainActivity)
+                            else enqueueDownload(task.url, 0, true)
+                        }
+                        button(if (task.kind == "SYSTEM" && status in listOf("queued", "running", "paused")) "取消" else if (status == "completed") "已保存" else "移除") {
                             if (task.kind == "SYSTEM" && task.systemId > 0 && status in listOf("queued", "running", "paused")) {
                                 manager.remove(task.systemId)
                                 taskStore.update(task.id, "cancelled", detail = "已取消")
@@ -1416,6 +1353,11 @@ class MainActivity : AppCompatActivity() {
             lower.contains(".png") -> "png"
             lower.contains(".webp") || lower.contains("1080webp") -> "webp"
             lower.contains(".gif") -> "gif"
+            lower.contains(".mp3") -> "mp3"
+            lower.contains(".m4a") -> "m4a"
+            lower.contains(".aac") -> "aac"
+            lower.contains(".wav") -> "wav"
+            lower.contains(".ogg") -> "ogg"
             lower.contains(".mp4") || lower.contains("video") -> "mp4"
             lower.contains(".mov") -> "mov"
             lower.contains(".webm") -> "webm"
@@ -1455,3 +1397,4 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 }
+
