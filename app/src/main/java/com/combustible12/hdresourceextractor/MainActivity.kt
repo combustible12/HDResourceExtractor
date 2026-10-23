@@ -56,6 +56,8 @@ class MainActivity : AppCompatActivity() {
     private val structuredMedia = linkedSetOf<String>()
     private val structuredOtherImages = linkedSetOf<String>()
     private val handler = Handler(Looper.getMainLooper())
+    private val activeSegmentDownloads = mutableSetOf<String>()
+    private val downloadedMedia by lazy { DownloadedMedia(this) }
 
     private var pendingSharedText: String = ""
     private var currentPageUrl: String = ""
@@ -69,6 +71,11 @@ class MainActivity : AppCompatActivity() {
         configureWebView()
         AppUpdater(this).recoverPendingUpdate { message -> runOnUiThread { statusText.text = message } }
         handleIncomingIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::resultsContainer.isInitialized) renderResults()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -482,7 +489,11 @@ class MainActivity : AppCompatActivity() {
         )
 
         val firstAction = makeCardAction(
-            if (isLikelyVideoUrl(url)) "下载视频" else "下载图片"
+            when (downloadedMedia.state(url)) {
+                "saved" -> "✓ 已下载保存"
+                "pending" -> "下载中 · 请勿重复下载"
+                else -> if (isLikelyVideoUrl(url)) "下载视频" else "下载图片"
+            }
         ) {
             enqueueDownload(url, index, showToast = true)
         }
@@ -1241,7 +1252,7 @@ class MainActivity : AppCompatActivity() {
 
         Toast.makeText(
             this,
-            "已加入 $queued 个下载任务",
+            "新增下载 $queued 个（已下载、下载中的自动跳过）",
             Toast.LENGTH_SHORT
         ).show()
     }
@@ -1258,15 +1269,24 @@ class MainActivity : AppCompatActivity() {
             return false
         }
 
+        val state = downloadedMedia.state(url)
+        if (state != "new" || synchronized(activeSegmentDownloads) { activeSegmentDownloads.contains(url) }) {
+            val note = if (state == "saved") "此资源已下载保存，无需重复下载" else "资源正在下载，跳过重复任务"
+            statusText.text = note
+            if (showToast) Toast.makeText(this, note, Toast.LENGTH_SHORT).show()
+            return false
+        }
         val path = url.substringBefore('?').substringBefore('#').lowercase(Locale.US)
         if (path.endsWith(".m3u8")) {
+            synchronized(activeSegmentDownloads) { activeSegmentDownloads.add(url) }
             HlsDownloader(this).download(
                 url = url,
                 userAgent = webView.settings.userAgentString.orEmpty(),
                 referer = currentPageUrl,
                 cookie = CookieManager.getInstance().getCookie(url).orEmpty()
             ) { success, message ->
-                runOnUiThread {
+                synchronized(activeSegmentDownloads) { activeSegmentDownloads.remove(url) }
+                runOnUiThread { renderResults()
                     statusText.text = message
                     Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                 }
@@ -1274,13 +1294,15 @@ class MainActivity : AppCompatActivity() {
             return true
         }
         if (path.endsWith(".mpd")) {
+            synchronized(activeSegmentDownloads) { activeSegmentDownloads.add(url) }
             HlsDownloader(this).download(
                 url = url,
                 userAgent = webView.settings.userAgentString.orEmpty(),
                 referer = currentPageUrl,
                 cookie = CookieManager.getInstance().getCookie(url).orEmpty()
             ) { _, message ->
-                runOnUiThread {
+                synchronized(activeSegmentDownloads) { activeSegmentDownloads.remove(url) }
+                runOnUiThread { renderResults()
                     statusText.text = message
                     Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                 }
@@ -1332,6 +1354,8 @@ class MainActivity : AppCompatActivity() {
 
             val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             val downloadId = manager.enqueue(request)
+            downloadedMedia.queue(url, downloadId)
+            renderResults()
             val prefs = getSharedPreferences("media_downloads", Context.MODE_PRIVATE)
             prefs.edit().putLong("latest_id", downloadId)
                 .putString("latest_url", url).apply()
