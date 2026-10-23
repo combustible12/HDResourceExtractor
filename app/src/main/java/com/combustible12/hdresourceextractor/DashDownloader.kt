@@ -278,9 +278,9 @@ class DashDownloader(private val context: Context) {
                             val d = entry.getAttribute("d").toLongOrNull() ?: error("DASH 时间轴缺少 d")
                             if (d <= 0) error("DASH 时间轴 d 无效")
                             clock = entry.getAttribute("t").toLongOrNull() ?: clock
-                            val repeat = entry.getAttribute("r").toLongOrNull() ?: 0L
+                            val repetitions = entry.getAttribute("r").toLongOrNull() ?: 0L
                             val next = entries.getOrNull(i + 1)?.getAttribute("t")?.toLongOrNull()
-                            val count = if (repeat >= 0) repeat + 1 else {
+                            val count = if (repetitions >= 0) repetitions + 1 else {
                                 val boundary = next ?: (periodSeconds * scale).toLong()
                                 if (boundary <= clock) error("无法确定 DASH 时间轴结束位置")
                                 (boundary - clock + d - 1) / d
