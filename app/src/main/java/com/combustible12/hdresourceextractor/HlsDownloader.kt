@@ -41,6 +41,16 @@ class HlsDownloader(private val context: Context) {
             try {
                 val segments = resolveSegments(url, userAgent, referer, cookie, 0)
                 val fmp4 = segments.firstOrNull()?.contains("__init_fmp4__") == true
+                val manifestKey = "media_" + url.hashCode().toString() + "_manifest"
+                val manifestFingerprint = segments.joinToString("\n").hashCode().toString()
+                if (prefs.getString(manifestKey, null) != manifestFingerprint) {
+                    prefs.getString(key + "_uri", null)?.let { old ->
+                        try { context.contentResolver.delete(android.net.Uri.parse(old), null, null) } catch (_: Exception) {}
+                    }
+                    prefs.edit().remove(manifestKey)
+                prefs.edit().remove(key + "_uri").remove(key + "_index").remove(key + "_bytes")
+                        .putString(manifestKey, manifestFingerprint).commit()
+                }
                 val effectiveSegments = segments.map { it.replace("__init_fmp4__", "") }
                 if (effectiveSegments.isEmpty()) error("HLS 播放列表没有媒体片段")
                 val resolver = context.contentResolver
