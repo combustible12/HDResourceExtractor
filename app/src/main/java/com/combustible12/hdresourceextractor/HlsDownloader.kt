@@ -111,6 +111,7 @@ class HlsDownloader(private val context: Context) {
                 }
                 prefs.edit().remove(key + "_uri").remove(key + "_index")
                     .remove(key + "_bytes").commit()
+                DownloadedMedia(context).saved(url, uri)
                 callback(true, "HLS 视频已保存至 Movies/HDResourceExtractor（TS 原始封装）")
             } catch (e: Exception) {
                 // Keep the pending file and segment position to resume on the next request.
