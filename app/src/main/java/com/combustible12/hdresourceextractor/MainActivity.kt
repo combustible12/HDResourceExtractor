@@ -77,7 +77,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun dp(value: Int): Int =
-        (value * resources.displayMetrics.density).toInt()
+        (value * getResources().displayMetrics.density).toInt()
 
     private fun roundedBackground(
         color: Int,
@@ -288,7 +288,7 @@ class MainActivity : AppCompatActivity() {
         }
         scrollView.addView(
             resultsContainer,
-            ScrollView.LayoutParams(
+            FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
@@ -831,10 +831,31 @@ class MainActivity : AppCompatActivity() {
         synchronized(xhsCandidates) {
             val oldScore = xhsCandidateScores[key] ?: Int.MIN_VALUE
             if (score > oldScore) {
-                xhsCandidates[key] = url
+                xhsCandidates[key] = xhsOriginalImageUrl(url)
                 xhsCandidateScores[key] = score
             }
         }
+    }
+
+    private fun xhsOriginalImageUrl(url: String): String {
+        return try {
+            val uri = Uri.parse(url)
+            val host = uri.host?.lowercase(Locale.US).orEmpty()
+            if (host == "ci.xiaohongshu.com") {
+                url.substringBefore('?').substringBefore('#')
+            } else if (host.endsWith("xhscdn.com")) {
+                val segments = uri.pathSegments
+                val timeIndex = segments.indexOfFirst { it.matches(Regex("[0-9]{12}")) }
+                if (timeIndex < 0 || timeIndex + 2 >= segments.size ||
+                    !segments[timeIndex + 1].matches(Regex("[0-9a-fA-F]{32}"))) {
+                    url
+                } else {
+                    val payload = segments.drop(timeIndex + 2).toMutableList()
+                    payload[payload.lastIndex] = payload.last().substringBefore('!').substringBefore('?')
+                    "https://ci.xiaohongshu.com/" + payload.joinToString("/")
+                }
+            } else url
+        } catch (_: Exception) { url }
     }
 
     private fun isLikelyXhsMainImage(
