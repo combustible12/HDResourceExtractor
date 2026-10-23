@@ -52,6 +52,9 @@ jobs:
           gradle-version: '8.7'
           cache-provider: basic
 
+      - name: Test image and video parsers
+        run: node tests/platform-parser-regression.mjs
+
       - name: Build current debug APK
         run: gradle :app:assembleDebug --no-daemon --stacktrace
 
