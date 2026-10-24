@@ -66,17 +66,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          apksigner="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          aapt="$ANDROID_HOME/build-tools/35.0.0/aapt"
           apk="app/build/outputs/apk/release/app-release.apk"
           test -s "$apk"
-          apksigner verify --verbose --print-certs "$apk"
-          actual=$(apksigner verify --print-certs "$apk" \
+          "$apksigner" verify --verbose --print-certs "$apk"
+          actual=$("$apksigner" verify --print-certs "$apk" \
             | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' \
             | tr '[:upper:]' '[:lower:]' | head -1)
           expected=$(tr -d '[:space:]' < release/signing-cert.sha256 \
             | tr '[:upper:]' '[:lower:]')
           test -n "$actual"
           test "$actual" = "$expected"
-          aapt dump badging "$apk" | grep -F "package: name='com.combustible12.hdresourceextractor'"
+          "$aapt" dump badging "$apk" | grep -F "package: name='com.combustible12.hdresourceextractor'"
 
       - name: Find compatible previous release
         env:
@@ -84,6 +86,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          apksigner="$ANDROID_HOME/build-tools/35.0.0/apksigner"
           previous_tag=$(gh release list --limit 20 \
             --json tagName,isDraft,isPrerelease,publishedAt \
             --jq 'map(select(.isDraft == false and .isPrerelease == false)) | sort_by(.publishedAt) | reverse | .[0].tagName // empty')
@@ -97,7 +100,7 @@ jobs:
             exit 0
           fi
           previous_apk=$(find "$RUNNER_TEMP/previous-release" -type f -name '*.apk' -print -quit)
-          previous_signer=$(apksigner verify --print-certs "$previous_apk" \
+          previous_signer=$("$apksigner" verify --print-certs "$previous_apk" \
             | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' \
             | tr '[:upper:]' '[:lower:]' | head -1)
           expected=$(tr -d '[:space:]' < release/signing-cert.sha256 \
