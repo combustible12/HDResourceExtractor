@@ -66,6 +66,14 @@ class MainActivity : AppCompatActivity() {
     private var xhsFallbackShown: Boolean = false
     private var pendingUpdateCheck: Boolean = false
     private val appUpdater by lazy { AppUpdater(this) }
+    private val clipboardManager by lazy { getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
+    private val autoLinkPrefs by lazy { getSharedPreferences("auto_link", Context.MODE_PRIVATE) }
+    private var watchingClipboard = false
+    private var handledClipboard = ""
+    private var preferSharedLink = false
+    private val autoLinkCheck = Runnable { recognizeClipboardLink() }
+    private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener { scheduleAutoLinkCheck() }
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,6 +88,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (!watchingClipboard) {
+            clipboardManager.addPrimaryClipChangedListener(clipboardListener)
+            watchingClipboard = true
+        }
+        scheduleAutoLinkCheck()
         if (::statusText.isInitialized) {
             appUpdater.observe { message -> runOnUiThread { statusText.text = message } }
             runCatching { appUpdater.recoverPendingUpdate { message -> runOnUiThread { statusText.text = message } } }
@@ -87,7 +100,56 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onPause() { appUpdater.close(); super.onPause() }
+    override fun onPause() {
+        stopWatchingClipboard()
+        preferSharedLink = false
+        appUpdater.close()
+        super.onPause()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) scheduleAutoLinkCheck()
+    }
+
+    private fun scheduleAutoLinkCheck() {
+        handler.removeCallbacks(autoLinkCheck)
+        handler.postDelayed(autoLinkCheck, 150)
+    }
+
+    private fun stopWatchingClipboard() {
+        handler.removeCallbacks(autoLinkCheck)
+        if (watchingClipboard) clipboardManager.removePrimaryClipChangedListener(clipboardListener)
+        watchingClipboard = false
+    }
+
+    private fun clipboardIdentity(text: String): String {
+        val timestamp = if (android.os.Build.VERSION.SDK_INT >= 26) clipboardManager.primaryClipDescription?.timestamp ?: 0L else 0L
+        return ResourceIdentity.hash("$timestamp|$text")
+    }
+
+    private fun recognizeClipboardLink() {
+        // Android 10+ only allows clipboard access while this window actually has focus.
+        if (!watchingClipboard || !hasWindowFocus() || !::urlInput.isInitialized || isFinishing || isDestroyed) return
+        val text = readClipboardText()
+        if (text.isBlank()) return
+        val identity = clipboardIdentity(text)
+        if (preferSharedLink) {
+            handledClipboard = identity
+            preferSharedLink = false
+            return
+        }
+        if (identity == handledClipboard || identity == autoLinkPrefs.getString("own_clip", "")) return
+        val url = extractFirstUrl(text) ?: return
+        val typed = urlInput.text?.toString().orEmpty()
+        // Do not replace a link the user is still editing.
+        if (urlInput.hasFocus() && typed.isNotBlank() && typed != currentPageUrl) return
+        handledClipboard = identity
+        if (url == currentPageUrl) return
+        pendingSharedText = ""
+        urlInput.setText(url)
+        openAndExtract()
+    }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -678,12 +740,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
-            val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
+            val sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty()
             val sharedUrl = extractFirstUrl(sharedText)
             if (sharedUrl != null) {
+                preferSharedLink = true
                 pendingSharedText = sharedText
                 urlInput.setText(sharedUrl)
-                statusText.text = "已接收网页链接，点“打开并提取”"
+                if (sharedUrl != currentPageUrl) openAndExtract()
+                scheduleAutoLinkCheck()
             }
         }
     }
@@ -1446,6 +1510,8 @@ class MainActivity : AppCompatActivity() {
     private fun copyToClipboard(text: String) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("resource url", text))
+        // Copying an extracted resource must not reopen it as a new source page.
+        autoLinkPrefs.edit().putString("own_clip", clipboardIdentity(text)).apply()
         Toast.makeText(this, "资源链接已复制", Toast.LENGTH_SHORT).show()
     }
 
@@ -1459,6 +1525,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        stopWatchingClipboard()
         handler.removeCallbacksAndMessages(null)
         appUpdater.close()
 
