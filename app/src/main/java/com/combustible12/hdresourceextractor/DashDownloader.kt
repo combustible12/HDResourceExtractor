@@ -44,7 +44,8 @@ class DashDownloader(private val context: Context) {
                     } }
                     progress?.invoke(90, "正在合并音视频")
                     val merged = File(dir, "merged")
-                    val webm = selected.flatten().any { it.mime.contains("webm") || it.codecs.startsWith("vp") || it.codecs.startsWith("av01") }
+                    // AV1 is valid in both MP4 and WebM; do not infer the container from av01 alone.
+                    val webm = selected.flatten().any { it.mime.contains("webm", true) || it.codecs.startsWith("vp", true) }
                     MediaJoiner.join(periods, merged, webm, control, selected.map { group -> group.associate { it.type to it.timeOffsetUs } })
                     MediaPublisher.save(context, url, merged, "hd_dash_${System.currentTimeMillis()}." + if (webm) "webm" else "mp4",
                         if (webm) "video/webm" else "video/mp4", control)
