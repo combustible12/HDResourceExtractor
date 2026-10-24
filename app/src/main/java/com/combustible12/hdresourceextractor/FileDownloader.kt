@@ -34,6 +34,8 @@ class FileDownloader(private val context: Context) {
                     }
                     val outcome = result ?: error("流媒体下载未返回结果")
                     if (!outcome.first) error(outcome.second)
+                    MediaPublisher.aliasSaved(context, t.url, source)
+                    DownloadCache.clear(context, t.url)
                     return
                 }
                 val mime = MediaSniffer.detect(file, contentType, t.name)
@@ -65,6 +67,12 @@ object MediaPublisher {
         if (exists(context, raw)) return true
         if (raw != null) prefs.edit().remove(key).commit()
         return false
+    }
+    @Synchronized fun aliasSaved(context: Context, original: String, source: String) {
+        val prefs = context.getSharedPreferences("saved_resources", Context.MODE_PRIVATE)
+        val uri = prefs.getString(ResourceIdentity.of(source), null)
+        check(exists(context, uri)) { "流媒体输出未保存" }
+        check(prefs.edit().putString(ResourceIdentity.of(original), uri).commit())
     }
     @Synchronized fun save(context: Context, url: String, file: File, name: String, mime: String, c: SegmentTaskQueue.Control?) {
         val prefs = context.getSharedPreferences("saved_resources", Context.MODE_PRIVATE)

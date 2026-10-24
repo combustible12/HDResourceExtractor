@@ -5,15 +5,13 @@ import android.content.Context
 import android.content.Intent
 import android.os.*
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import kotlin.math.roundToInt
 
 /** Foreground, resumable APK downloader independent of the OEM DownloadManager. */
 class UpdateDownloadService : Service() {
     private var worker: Thread? = null
-    @Volatile private var stopped = false
+    private var control: SegmentTaskQueue.Control? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -25,109 +23,65 @@ class UpdateDownloadService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (worker?.isAlive == true) return START_NOT_STICKY
         val prefs = getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE)
         val url = intent?.getStringExtra(EXTRA_URL) ?: prefs.getString(AppUpdater.KEY_URL, "").orEmpty()
         val version = intent?.getStringExtra(EXTRA_VERSION) ?: prefs.getString(AppUpdater.KEY_VERSION, "").orEmpty()
         startForeground(NOTIFICATION_ID, notification(version, "正在连接下载服务器…", -1, true))
-        if (worker?.isAlive != true) worker = Thread { download(url, version) }.apply { start() }
-        return START_STICKY
+        val transfer = SegmentTaskQueue.Control()
+        control = transfer
+        wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:apk-update").apply {
+            acquire(10 * 60 * 1000L)
+        }
+        worker = Thread { download(url, version, transfer) }.apply { start() }
+        return START_NOT_STICKY
     }
 
-    private fun download(url: String, version: String) {
-        var connection: HttpURLConnection? = null
+    private fun download(url: String, version: String, transfer: SegmentTaskQueue.Control) {
+        val prefs = getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE)
+        var partial: File? = null
         try {
+            require(AppUpdater.validVersion(version)) { "更新版本号无效" }
             require(url.startsWith("https://github.com/combustible12/HDResourceExtractor/releases/download/")) { "更新地址无效" }
             val directory = getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
                 ?: error("无法创建下载目录")
             val target = File(directory, "HDResourceExtractor-$version.apk")
-            val partial = File(directory, "${target.name}.part")
-            val existing = partial.length()
-            val prefs = getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE)
-            val previousValidator = prefs.getString(AppUpdater.KEY_VALIDATOR, "").orEmpty()
-            connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = true
-                connectTimeout = 20000
-                readTimeout = 30000
-                setRequestProperty("User-Agent", "HDResourceExtractor-Android/$version")
-                setRequestProperty("Accept", "application/octet-stream")
-                if (existing > 0) setRequestProperty("Range", "bytes=$existing-")
-                if (existing > 0 && previousValidator.isNotBlank()) setRequestProperty("If-Range", previousValidator)
-            }
-            val code = connection.responseCode
-            if (code == 416 && existing > 0) {
-                partial.delete()
-                prefs.edit().remove(AppUpdater.KEY_VALIDATOR).commit()
-                connection.disconnect(); connection = null
-                download(url, version)
-                return
-            }
-            require(code == HttpURLConnection.HTTP_OK || code == HttpURLConnection.HTTP_PARTIAL) { "HTTP $code" }
-            val append = code == HttpURLConnection.HTTP_PARTIAL && existing > 0
-            val validator = connection.getHeaderField("ETag")?.takeUnless { it.startsWith("W/") }
-                ?: connection.getHeaderField("Last-Modified").orEmpty()
-            if (append) {
-                val rangeStart = Regex("bytes (\\d+)-(\\d+)/(\\d+|\\*)")
-                    .matchEntire(connection.getHeaderField("Content-Range").orEmpty())?.groupValues?.get(1)?.toLongOrNull()
-                val changed = rangeStart != existing || previousValidator.isNotBlank() && validator.isNotBlank() && previousValidator != validator
-                if (changed) {
-                    partial.delete()
-                    prefs.edit().remove(AppUpdater.KEY_VALIDATOR).commit()
-                    connection.disconnect(); connection = null
-                    download(url, version)
-                    return
-                }
-            }
-            val base = if (append) existing else 0L
-            val responseLength = connection.contentLengthLong
-            val total = if (responseLength > 0) base + responseLength else -1L
-            if (!append && partial.exists()) partial.delete()
-            if (validator.isNotBlank()) prefs.edit().putString(AppUpdater.KEY_VALIDATOR, validator).commit()
-            connection.inputStream.use { input ->
-                FileOutputStream(partial, append).use { output ->
-                    val buffer = ByteArray(128 * 1024)
-                    var downloaded = base
-                    var lastNotify = 0L
-                    while (!stopped) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        output.write(buffer, 0, count)
-                        downloaded += count
-                        val now = SystemClock.elapsedRealtime()
-                        if (now - lastNotify >= 500L) {
-                            lastNotify = now
-                            val percent = if (total > 0) (downloaded * 100.0 / total).roundToInt().coerceIn(0, 100) else -1
-                            val message = if (percent >= 0) "安装包下载中 · $percent%" else "安装包下载中 · ${downloaded / 1024} KB"
-                            prefs.edit().putInt(AppUpdater.KEY_PROGRESS, percent).commit()
-                            show(notification(version, message, percent, true))
-                            sendBroadcast(Intent(ACTION_PROGRESS).setPackage(packageName)
-                                .putExtra(EXTRA_VERSION, version).putExtra(EXTRA_MESSAGE, message))
-                        }
+            val staged = File(directory, "${target.name}.part")
+            partial = staged
+            var lastNotify = 0L
+            // Use the same durable validator/digest checkpoints as regular downloads.
+            DownloadCache.fetch(url, staged, "HDResourceExtractor-Android/$version", "", "", transfer,
+                progress = { downloaded, total ->
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastNotify >= 500L) {
+                        lastNotify = now
+                        val percent = if (total > 0) (downloaded * 100.0 / total).roundToInt().coerceIn(0, 99) else -1
+                        val message = if (percent >= 0) "安装包下载中 · $percent%" else "安装包下载中 · ${downloaded / 1024} KB"
+                        prefs.edit().putInt(AppUpdater.KEY_PROGRESS, percent).apply()
+                        show(notification(version, message, percent, true))
+                        sendBroadcast(Intent(ACTION_PROGRESS).setPackage(packageName)
+                            .putExtra(EXTRA_VERSION, version).putExtra(EXTRA_MESSAGE, message))
                     }
-                    output.fd.sync()
-                }
-            }
-            check(!stopped) { "下载已中断" }
-            check(partial.length() > 0L && (total <= 0L || partial.length() == total)) { "安装包下载不完整" }
-            val info = packageManager.getPackageArchiveInfo(partial.absolutePath, 0) ?: error("安装包校验失败")
-            check(info.packageName == packageName && info.versionName == version) { "安装包版本不匹配" }
-            if (target.exists()) target.delete()
-            check(partial.renameTo(target)) { "无法保存安装包" }
-            getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE).edit()
-                .putString(AppUpdater.KEY_PATH, target.absolutePath)
+                })
+            transfer.check()
+            AppUpdater.validateApk(this, staged, version)
+            transfer.check()
+            if (target.exists()) check(target.delete()) { "无法替换旧安装包" }
+            check(staged.renameTo(target)) { "无法保存安装包" }
+            File(staged.path + ".json").delete()
+            prefs.edit().putString(AppUpdater.KEY_PATH, target.absolutePath)
                 .putString(AppUpdater.KEY_STATUS, AppUpdater.STATUS_COMPLETE)
                 .putInt(AppUpdater.KEY_PROGRESS, 100).remove(AppUpdater.KEY_ERROR).commit()
             finish(version, true, "新版本 $version 已下载，点击继续安装", null)
         } catch (e: Exception) {
-            if (e.message.orEmpty().contains("校验") || e.message.orEmpty().contains("版本不匹配")) {
-                getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
-                    ?.resolve("HDResourceExtractor-$version.apk.part")?.delete()
-                getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE).edit().remove(AppUpdater.KEY_VALIDATOR).commit()
+            // Invalid archives are never reused. Network interruptions keep verified partial bytes.
+            if (e !is SegmentTaskQueue.Stopped && listOf("校验", "签名", "不匹配", "不高于").any { e.message.orEmpty().contains(it) }) {
+                partial?.let { it.delete(); File(it.path + ".json").delete() }
             }
-            getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE).edit()
-                .putString(AppUpdater.KEY_STATUS, AppUpdater.STATUS_FAILED)
+            prefs.edit().putString(AppUpdater.KEY_STATUS, AppUpdater.STATUS_FAILED)
                 .putString(AppUpdater.KEY_ERROR, e.message ?: "未知错误").commit()
-            finish(version, false, "升级下载失败，点击返回重试", e.message ?: "未知错误")
-        } finally { connection?.disconnect() }
+            finish(version, false, "升级下载中断，点击返回重试", e.message ?: "未知错误")
+        } finally { wakeLock?.let { if (it.isHeld) it.release() } }
     }
 
     private fun notification(version: String, text: String, percent: Int, ongoing: Boolean): Notification {
@@ -152,7 +106,16 @@ class UpdateDownloadService : Service() {
         stopSelf()
     }
 
-    override fun onDestroy() { stopped = true; super.onDestroy() }
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        control?.stop(true)
+        stopForeground(STOP_FOREGROUND_DETACH)
+        stopSelf()
+    }
+    override fun onDestroy() {
+        control?.stop(true)
+        wakeLock?.let { if (it.isHeld) it.release() }
+        super.onDestroy()
+    }
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {

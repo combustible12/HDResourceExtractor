@@ -65,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private var isDouyinSession: Boolean = false
     private var xhsFallbackShown: Boolean = false
     private var pendingUpdateCheck: Boolean = false
+    private val appUpdater by lazy { AppUpdater(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,8 +80,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (::statusText.isInitialized) AppUpdater(this).recoverPendingUpdate { message -> runOnUiThread { statusText.text = message } }
+        if (::statusText.isInitialized) {
+            appUpdater.observe { message -> runOnUiThread { statusText.text = message } }
+            runCatching { appUpdater.recoverPendingUpdate { message -> runOnUiThread { statusText.text = message } } }
+                .onFailure { statusText.text = "升级恢复失败，点击升级重试：${it.message}" }
+        }
     }
+
+    override fun onPause() { appUpdater.close(); super.onPause() }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -98,7 +105,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         pendingUpdateCheck = false
-        AppUpdater(this).checkForUpdate { message ->
+        appUpdater.checkForUpdate { message ->
             runOnUiThread { statusText.text = message }
         }
     }
@@ -111,7 +118,7 @@ class MainActivity : AppCompatActivity() {
             checkForAppUpdate()
         } else {
             statusText.text = "通知权限未开启，升级进度将在应用内显示"
-            AppUpdater(this).checkForUpdate { message ->
+            appUpdater.checkForUpdate { message ->
                 runOnUiThread { statusText.text = message }
             }
         }
@@ -1453,6 +1460,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        appUpdater.close()
 
         webView.apply {
             loadUrl("about:blank")
