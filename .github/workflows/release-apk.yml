@@ -95,5 +95,5 @@ jobs:
           asset="HDResourceExtractor-$tag.apk"
           cp app/build/outputs/apk/release/app-release.apk "$asset"
           gh release create "$tag" "$asset" \
-            --title "$tag" \
+            --title "$tag" --target "$GITHUB_SHA" \
             --notes "Permanent release signing baseline. Future one-tap updates are verified against the same signing certificate."
