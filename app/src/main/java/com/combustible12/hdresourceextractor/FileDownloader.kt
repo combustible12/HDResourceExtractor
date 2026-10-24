@@ -22,7 +22,21 @@ class FileDownloader(private val context: Context) {
                 c.check()
                 val file = DownloadCache.fetch(source, File(DownloadCache.dir(context, t.url), "file_" + ResourceIdentity.hash(source)), t.agent, t.referer, cookie, c,
                     progress = { done, total -> progress(if (total > 0) (done * 95 / total).toInt() else 0, "已下载 ${done / 1024} KB") })
-                val mime = MediaSniffer.detect(file, DownloadCache.json(File(file.path + ".json")).optString("contentType"), t.name)
+                val contentType = DownloadCache.json(File(file.path + ".json")).optString("contentType")
+                val manifest = MediaSniffer.manifest(file, contentType)
+                if (manifest != null) {
+                    var result: Pair<Boolean, String>? = null
+                    val callback: (Boolean, String) -> Unit = { ok, message -> result = ok to message }
+                    if (manifest == MediaSniffer.Manifest.HLS) {
+                        HlsDownloader(context).download(source, t.agent, t.referer, cookie, callback, c, progress)
+                    } else {
+                        DashDownloader(context).download(source, t.agent, t.referer, cookie, callback, c, progress)
+                    }
+                    val outcome = result ?: error("流媒体下载未返回结果")
+                    if (!outcome.first) error(outcome.second)
+                    return
+                }
+                val mime = MediaSniffer.detect(file, contentType, t.name)
                 val ext = android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: t.name.substringAfterLast('.', "bin")
                 MediaPublisher.save(context, t.url, file, t.name.substringBeforeLast('.') + "." + ext, mime, c)
                 failure = null
@@ -36,7 +50,22 @@ class FileDownloader(private val context: Context) {
 
 /** Journal the URI before copying so process death cannot leave an untracked pending output. */
 object MediaPublisher {
-    fun saved(context: Context, url: String) = context.getSharedPreferences("saved_resources", Context.MODE_PRIVATE).contains(ResourceIdentity.of(url))
+    private fun exists(context: Context, raw: String?): Boolean {
+        if (raw.isNullOrBlank()) return false
+        return runCatching {
+            context.contentResolver.openFileDescriptor(Uri.parse(raw), "r")?.use { descriptor ->
+                descriptor.statSize != 0L
+            } == true
+        }.getOrDefault(false)
+    }
+    fun saved(context: Context, url: String): Boolean {
+        val prefs = context.getSharedPreferences("saved_resources", Context.MODE_PRIVATE)
+        val key = ResourceIdentity.of(url)
+        val raw = prefs.getString(key, null)
+        if (exists(context, raw)) return true
+        if (raw != null) prefs.edit().remove(key).commit()
+        return false
+    }
     @Synchronized fun save(context: Context, url: String, file: File, name: String, mime: String, c: SegmentTaskQueue.Control?) {
         val prefs = context.getSharedPreferences("saved_resources", Context.MODE_PRIVATE)
         val key = ResourceIdentity.of(url)
@@ -45,12 +74,16 @@ object MediaPublisher {
             if (c == null) work() else synchronized(c) { work() }
         }
         c?.check()
-        if (prefs.contains(key)) { finish { }; return }
+        if (saved(context, url)) { finish { }; return }
         val hash = DownloadCache.digest(file)
         c?.check()
-        if (prefs.contains("content_$hash")) {
-            finish { check(prefs.edit().putString(key, prefs.getString("content_$hash", "")).commit()) }
+        val contentKey = "content_$hash"
+        val existing = prefs.getString(contentKey, null)
+        if (exists(context, existing)) {
+            finish { check(prefs.edit().putString(key, existing).commit()) }
             return
+        } else if (existing != null) {
+            prefs.edit().remove(contentKey).commit()
         }
         val resolver = context.contentResolver
         val pendingKey = "pending_$key"
@@ -76,7 +109,9 @@ object MediaPublisher {
                 while (true) { c?.check(); val n = input.read(b); if (n < 0) break; out.write(b, 0, n) }
             } } ?: error("无法写入输出文件")
             finish {
-                if (Build.VERSION.SDK_INT >= 29) resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+                if (Build.VERSION.SDK_INT >= 29) check(resolver.update(uri,
+                    ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null) == 1) { "无法完成输出文件" }
+                check(exists(context, uri.toString())) { "输出文件未成功保存" }
                 check(prefs.edit().putString(key, uri.toString()).putString("content_$hash", uri.toString()).remove(pendingKey).commit())
             }
         } catch (e: Exception) { resolver.delete(uri, null, null); prefs.edit().remove(pendingKey).commit(); throw e }
