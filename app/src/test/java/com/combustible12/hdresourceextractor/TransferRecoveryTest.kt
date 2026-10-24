@@ -83,7 +83,7 @@ class TransferRecoveryTest {
         assertEquals(MediaSniffer.Manifest.DASH, MediaSniffer.manifest(dash, "application/xml"))
     }
     @Test fun missingPublishedUriIsNotReportedAsSavedOrUsedForDeduplication() {
-        val app = org.robolectric.RuntimeEnvironment.getApplication<android.app.Application>()
+        val app = org.robolectric.RuntimeEnvironment.getApplication()
         val url = "https://example.com/deleted.jpg"
         val key = ResourceIdentity.of(url)
         app.getSharedPreferences("saved_resources", android.content.Context.MODE_PRIVATE).edit()
