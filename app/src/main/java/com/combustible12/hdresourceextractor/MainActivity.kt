@@ -14,6 +14,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -64,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private var isXhsSession: Boolean = false
     private var isDouyinSession: Boolean = false
     private var xhsFallbackShown: Boolean = false
+    private var pendingUpdateCheck: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,9 +73,6 @@ class MainActivity : AppCompatActivity() {
             .map { ResourceIdentity.of(it.url) }.toSet())
         if (taskStore.all().any { it.kind != "SYSTEM" && it.status in listOf("running", "queued") }) DownloadService.start(this)
 
-        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 104)
-        }
         buildUi()
         configureWebView()
         handleIncomingIntent(intent)
@@ -88,6 +87,34 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIncomingIntent(intent)
+    }
+
+    private fun checkForAppUpdate() {
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingUpdateCheck = true
+            statusText.text = "请允许通知权限，用于显示升级下载进度"
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 104)
+            return
+        }
+        pendingUpdateCheck = false
+        AppUpdater(this).checkForUpdate { message ->
+            runOnUiThread { statusText.text = message }
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != 104 || !pendingUpdateCheck) return
+        pendingUpdateCheck = false
+        if (grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            checkForAppUpdate()
+        } else {
+            statusText.text = "通知权限未开启，请在系统设置中允许后重试"
+            Toast.makeText(this, "需要通知权限才能看到升级进度", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+        }
     }
 
     private fun dp(value: Int): Int =
@@ -239,9 +266,7 @@ class MainActivity : AppCompatActivity() {
 
         val updateButton = makeBottomActionButton("一键检查并升级").apply {
             setOnClickListener {
-                AppUpdater(this@MainActivity).checkForUpdate { message ->
-                    runOnUiThread { statusText.text = message }
-                }
+                checkForAppUpdate()
             }
         }
         val resultHeader = LinearLayout(this).apply {
