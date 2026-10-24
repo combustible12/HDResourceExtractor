@@ -61,6 +61,7 @@ class MainActivity : AppCompatActivity() {
 
     private var pendingSharedText: String = ""
     private var currentPageUrl: String = ""
+    private var submittedUrl: String = ""
     @Volatile private var pageGeneration = 0L
     private var isXhsSession: Boolean = false
     private var isDouyinSession: Boolean = false
@@ -151,9 +152,9 @@ class MainActivity : AppCompatActivity() {
         val url = extractFirstUrl(text) ?: return
         val typed = urlInput.text?.toString().orEmpty()
         // Do not replace a link the user is still editing.
-        if (urlInput.hasFocus() && typed.isNotBlank() && typed != currentPageUrl) return
+        if (urlInput.hasFocus() && typed.isNotBlank() && typed != submittedUrl) return
         handledClipboard = identity
-        if (url == currentPageUrl) return
+        if (url == currentPageUrl || url == submittedUrl) return
         pendingSharedText = ""
         urlInput.setText(url)
         openAndExtract()
@@ -783,6 +784,7 @@ class MainActivity : AppCompatActivity() {
         pageGeneration++
         urlInput.setText(url)
         currentPageUrl = url
+        submittedUrl = url
         isXhsSession = isXhsUrl(url)
         isDouyinSession = url.contains("douyin.com", true) || url.contains("iesdouyin.com", true)
         xhsFallbackShown = false
@@ -1349,6 +1351,15 @@ class MainActivity : AppCompatActivity() {
             lower.contains("video")
     }
 
+    private fun requestDownloadNotificationsOnce() {
+        if (android.os.Build.VERSION.SDK_INT < 33 || pendingUpdateCheck ||
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        val prefs = getSharedPreferences("ui_permissions", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("download_notifications_requested", false)) return
+        prefs.edit().putBoolean("download_notifications_requested", true).apply()
+        requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 105)
+    }
+
     private enum class EnqueueState { QUEUED, SAVED, ACTIVE, PAUSED, FAILED }
     private data class EnqueueResult(val state: EnqueueState, val message: String)
 
@@ -1378,6 +1389,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun enqueueDownload(url: String, index: Int, showToast: Boolean): EnqueueResult {
         val outcome = try {
+            requestDownloadNotificationsOnce()
             require(url.startsWith("http://") || url.startsWith("https://")) { "该资源不能直接下载，请重新提取实际媒体地址" }
             if (android.os.Build.VERSION.SDK_INT <= 28 && checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE), 103)
