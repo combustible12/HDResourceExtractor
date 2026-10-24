@@ -54,6 +54,9 @@ jobs:
           chmod 600 "$keystore"
           echo "HDRESOURCEEXTRACTOR_KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
 
+      - name: Guard network permission and recovery crash regression
+        run: gradle :app:testDebugUnitTest --tests com.combustible12.hdresourceextractor.DownloadServiceRecoveryTest --no-daemon
+
       - name: Build signed release APK
         run: gradle :app:assembleRelease --no-daemon --stacktrace
 
@@ -74,6 +77,7 @@ jobs:
           test -n "$actual"
           test "$actual" = "$expected"
           "$aapt" dump badging "$apk" | grep -F "package: name='com.combustible12.hdresourceextractor'"
+          "$aapt" dump permissions "$apk" | grep -F "android.permission.ACCESS_NETWORK_STATE"
 
       - name: Publish versioned release
         env:

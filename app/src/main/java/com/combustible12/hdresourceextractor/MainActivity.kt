@@ -77,12 +77,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        DownloadCache.clean(this, taskStore.all().filter { it.status !in listOf("completed", "cancelled") }
-            .map { ResourceIdentity.of(it.url) }.toSet())
-        if (taskStore.all().any { it.kind != "SYSTEM" && it.status in listOf("running", "queued") }) DownloadService.start(this)
-
+        // Build the screen before restoring work: a failed recovery must not lock the user out.
         buildUi()
         configureWebView()
+        runCatching {
+            DownloadCache.clean(this, taskStore.all().filter { it.status !in listOf("completed", "cancelled") }
+                .map { ResourceIdentity.of(it.url) }.toSet())
+            if (taskStore.all().any { it.kind != "SYSTEM" && it.status in listOf("running", "queued") }) DownloadService.start(this)
+        }.onFailure { statusText.text = "下载任务恢复失败，可在任务管理重试：${it.message}" }
         handleIncomingIntent(intent)
     }
 
@@ -1478,7 +1480,14 @@ class MainActivity : AppCompatActivity() {
                             textSize = 12f
                             minWidth = 0
                             minimumWidth = 0
-                            setOnClickListener { action(); handler.post { run() } }
+                            setOnClickListener {
+                                runCatching { action() }.onFailure { error ->
+                                    val message = "任务操作失败：${error.message ?: error.javaClass.simpleName}"
+                                    statusText.text = message
+                                    Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
+                                }
+                                handler.post { run() }
+                            }
                         }, LinearLayout.LayoutParams(0, dp(44), 1f))
                     }
                     if (task.kind != "SYSTEM" && status in listOf("queued", "running")) {
@@ -1486,17 +1495,18 @@ class MainActivity : AppCompatActivity() {
                         button("取消") { queue.cancel(task.id) }
                     } else if (task.kind != "SYSTEM" && status == "paused") {
                         button("恢复") {
-                            if (queue.resume(task.id)) {
-                                DownloadService.start(this@MainActivity)
-                            } else {
+                            DownloadService.start(this@MainActivity)
+                            if (!queue.resume(task.id)) {
                                 Toast.makeText(this@MainActivity, "任务正在停止，请稍后恢复", Toast.LENGTH_SHORT).show()
                             }
                         }
                         button("取消") { queue.cancel(task.id) }
                     } else {
                         if (status != "completed") button("重试") {
-                            if (task.kind != "SYSTEM" && queue.resume(task.id)) DownloadService.start(this@MainActivity)
-                            else enqueueDownload(task.url, 0, true)
+                            if (task.kind != "SYSTEM" && task.status in listOf("failed", "paused", "interrupted")) {
+                                DownloadService.start(this@MainActivity)
+                                if (!queue.resume(task.id)) Toast.makeText(this@MainActivity, "任务正在停止，请稍后重试", Toast.LENGTH_SHORT).show()
+                            } else enqueueDownload(task.url, 0, true)
                         }
                         if (status == "completed") {
                             row.addView(TextView(this@MainActivity).apply {

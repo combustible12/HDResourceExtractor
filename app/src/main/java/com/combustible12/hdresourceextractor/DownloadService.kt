@@ -50,14 +50,18 @@ class DownloadService : Service() {
             private set
         fun start(context: Context) {
             val app = context.applicationContext
-            schedule(app)
             val intent = Intent(app, DownloadService::class.java)
             if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(intent) else app.startService(intent)
+            // Recovery scheduling is optional; it must never block a user-initiated download.
+            schedule(app)
         }
-        fun schedule(context: Context) {
+        fun schedule(context: Context): Boolean = try {
             val job = JobInfo.Builder(211, ComponentName(context, DownloadRecoveryJob::class.java))
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY).setPersisted(true).setMinimumLatency(15000).build()
-            context.getSystemService(JobScheduler::class.java).schedule(job)
+            context.getSystemService(JobScheduler::class.java).schedule(job) == JobScheduler.RESULT_SUCCESS
+        } catch (e: Exception) {
+            android.util.Log.w("DownloadService", "Background recovery could not be scheduled; foreground downloads remain available", e)
+            false
         }
     }
 }
