@@ -1028,7 +1028,7 @@ class MainActivity : AppCompatActivity() {
                 visibleResources.addAll(filtered)
                 renderResults()
                 val platform = if (isDouyinSession) "抖音" else "小红书"
-                statusText.text = "已识别 ${filtered.size} 个$platform图片/视频资源"
+                statusText.text = "已识别 ${filtered.size} 个${platform}图片/视频资源"
             }
             return
         }
