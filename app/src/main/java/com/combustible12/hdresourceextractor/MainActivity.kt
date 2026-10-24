@@ -14,7 +14,6 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
-import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -111,9 +110,10 @@ class MainActivity : AppCompatActivity() {
         if (grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED) {
             checkForAppUpdate()
         } else {
-            statusText.text = "通知权限未开启，请在系统设置中允许后重试"
-            Toast.makeText(this, "需要通知权限才能看到升级进度", Toast.LENGTH_LONG).show()
-            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+            statusText.text = "通知权限未开启，升级进度将在应用内显示"
+            AppUpdater(this).checkForUpdate { message ->
+                runOnUiThread { statusText.text = message }
+            }
         }
     }
 
@@ -1027,7 +1027,8 @@ class MainActivity : AppCompatActivity() {
                 visibleResources.clear()
                 visibleResources.addAll(filtered)
                 renderResults()
-                statusText.text = "已识别 ${filtered.size} 个小红书图片/视频资源"
+                val platform = if (isDouyinSession) "抖音" else "小红书"
+                statusText.text = "已识别 ${filtered.size} 个$platform图片/视频资源"
             }
             return
         }
@@ -1390,7 +1391,13 @@ class MainActivity : AppCompatActivity() {
                             if (task.kind != "SYSTEM" && queue.resume(task.id)) DownloadService.start(this@MainActivity)
                             else enqueueDownload(task.url, 0, true)
                         }
-                        button(if (task.kind == "SYSTEM" && status in listOf("queued", "running", "paused")) "取消" else if (status == "completed") "已保存" else "移除") {
+                        if (status == "completed") {
+                            row.addView(TextView(this@MainActivity).apply {
+                                text = if (MediaPublisher.saved(this@MainActivity, task.url)) "已保存" else "原文件已被删除"
+                                gravity = Gravity.CENTER
+                                textSize = 12f
+                            }, LinearLayout.LayoutParams(0, dp(44), 1f))
+                        } else button(if (task.kind == "SYSTEM" && status in listOf("queued", "running", "paused")) "取消" else "移除") {
                             if (task.kind == "SYSTEM" && task.systemId > 0 && status in listOf("queued", "running", "paused")) {
                                 manager.remove(task.systemId)
                                 taskStore.update(task.id, "cancelled", detail = "已取消")
