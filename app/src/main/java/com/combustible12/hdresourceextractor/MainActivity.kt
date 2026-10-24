@@ -237,7 +237,7 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
-        val updateButton = makeMainButton("一键检查并升级", primary = false).apply {
+        val updateButton = makeBottomActionButton("一键检查并升级").apply {
             setOnClickListener {
                 AppUpdater(this@MainActivity).checkForUpdate { message ->
                     runOnUiThread { statusText.text = message }
@@ -317,7 +317,7 @@ class MainActivity : AppCompatActivity() {
             )
         )
 
-        val tasksButton = makeMainButton("下载任务管理", false).apply {
+        val tasksButton = makeBottomActionButton("下载任务管理").apply {
             setOnClickListener { showDownloadTasks() }
         }
         foreground.addView(tasksButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)).apply { topMargin = dp(8) })
@@ -326,6 +326,7 @@ class MainActivity : AppCompatActivity() {
             updateButton,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)).apply {
                 topMargin = dp(8)
+                bottomMargin = dp(42)
             }
         )
 
@@ -361,6 +362,24 @@ class MainActivity : AppCompatActivity() {
                 7,
                 Color.rgb(190, 195, 202)
             )
+        }
+
+    private fun makeBottomActionButton(textValue: String): Button =
+        Button(this).apply {
+            text = textValue
+            isAllCaps = false
+            textSize = 16f
+            setTextColor(Color.rgb(28, 28, 28))
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            minHeight = 0
+            minimumHeight = 0
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(0, 0, 0, 0)
+            background = roundedBackground(Color.rgb(245, 246, 248), 7)
+            stateListAnimator = null
+            elevation = 0f
         }
 
     private fun renderResults() {
@@ -1413,4 +1432,5 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 }
+
 
