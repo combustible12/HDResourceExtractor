@@ -3,6 +3,17 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+def releaseKeystorePath = System.getenv('HDRESOURCEEXTRACTOR_KEYSTORE_PATH')
+def releaseStorePassword = System.getenv('HDRESOURCEEXTRACTOR_STORE_PASSWORD')
+def releaseKeyAlias = System.getenv('HDRESOURCEEXTRACTOR_KEY_ALIAS')
+def releaseKeyPassword = System.getenv('HDRESOURCEEXTRACTOR_KEY_PASSWORD')
+def hasReleaseSigning = [
+        releaseKeystorePath,
+        releaseStorePassword,
+        releaseKeyAlias,
+        releaseKeyPassword
+].every { it != null && !it.isBlank() }
+
 android {
     namespace 'com.combustible12.hdresourceextractor'
     compileSdk 35
@@ -11,12 +22,26 @@ android {
         applicationId 'com.combustible12.hdresourceextractor'
         minSdk 24
         targetSdk 35
-        versionCode 19
-        versionName '0.15.4'
+        versionCode 20
+        versionName '0.15.5'
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
     }
 
     buildTypes {
         release {
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }

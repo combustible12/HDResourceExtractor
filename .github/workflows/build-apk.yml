@@ -1,4 +1,4 @@
-name: Build APK
+name: Build debug APK
 
 on:
   workflow_dispatch:
@@ -40,12 +40,6 @@ jobs:
       - name: Install Android 35
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Restore stable debug signing key
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: hdresourceextractor-debug-keystore-v1
-
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v6
         with:
@@ -55,13 +49,13 @@ jobs:
       - name: Test image and video parsers
         run: node tests/platform-parser-regression.mjs
 
-      - name: Build current debug APK
+      - name: Build non-release debug APK
         run: gradle :app:assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v6
         with:
-          name: HDResourceExtractor-debug-apk
+          name: HDResourceExtractor-debug-not-for-updates
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14

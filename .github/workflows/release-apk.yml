@@ -1,4 +1,4 @@
-name: Publish APK Release
+name: Publish signed APK release
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
     paths:
       - 'app/**'
       - 'tests/**'
+      - 'release/signing-cert.sha256'
       - '.github/workflows/release-apk.yml'
   workflow_dispatch:
 
@@ -14,34 +15,119 @@ permissions:
 
 concurrency:
   group: publish-hdresourceextractor
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
+    env:
+      HDRESOURCEEXTRACTOR_STORE_PASSWORD: ${{ secrets.HDRESOURCEEXTRACTOR_STORE_PASSWORD }}
+      HDRESOURCEEXTRACTOR_KEY_ALIAS: ${{ secrets.HDRESOURCEEXTRACTOR_KEY_ALIAS }}
+      HDRESOURCEEXTRACTOR_KEY_PASSWORD: ${{ secrets.HDRESOURCEEXTRACTOR_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v4
-      - name: Install Android 35
+      - name: Install Android build dependencies
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
-      - name: Restore stable debug signing key
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: hdresourceextractor-debug-keystore-v1
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.7'
           cache-provider: basic
-      - name: Parser regression tests
-        run: node tests/platform-parser-regression.mjs
-      - name: Build APK
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Prepare permanent release signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.HDRESOURCEEXTRACTOR_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64"
+          test -n "$HDRESOURCEEXTRACTOR_STORE_PASSWORD"
+          test -n "$HDRESOURCEEXTRACTOR_KEY_ALIAS"
+          test -n "$HDRESOURCEEXTRACTOR_KEY_PASSWORD"
+          keystore="$RUNNER_TEMP/hdresourceextractor-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          echo "HDRESOURCEEXTRACTOR_KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
+
+      - name: Regression tests
+        run: |
+          node tests/platform-parser-regression.mjs
+          gradle :app:testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Build signed release APK
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Verify release signer and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/release/app-release.apk"
+          test -s "$apk"
+          apksigner verify --verbose --print-certs "$apk"
+          actual=$(apksigner verify --print-certs "$apk" \
+            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' \
+            | tr '[:upper:]' '[:lower:]' | head -1)
+          expected=$(tr -d '[:space:]' < release/signing-cert.sha256 \
+            | tr '[:upper:]' '[:lower:]')
+          test -n "$actual"
+          test "$actual" = "$expected"
+          aapt dump badging "$apk" | grep -F "package: name='com.combustible12.hdresourceextractor'"
+
+      - name: Find compatible previous release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous_tag=$(gh release list --limit 20 \
+            --json tagName,isDraft,isPrerelease,publishedAt \
+            --jq 'map(select(.isDraft == false and .isPrerelease == false)) | sort_by(.publishedAt) | reverse | .[0].tagName // empty')
+          if [ -z "$previous_tag" ]; then
+            echo "No previous release; this build establishes the signing baseline."
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/previous-release"
+          if ! gh release download "$previous_tag" --pattern '*.apk' --dir "$RUNNER_TEMP/previous-release"; then
+            echo "Previous release has no APK; this build establishes the signing baseline."
+            exit 0
+          fi
+          previous_apk=$(find "$RUNNER_TEMP/previous-release" -type f -name '*.apk' -print -quit)
+          previous_signer=$(apksigner verify --print-certs "$previous_apk" \
+            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' \
+            | tr '[:upper:]' '[:lower:]' | head -1)
+          expected=$(tr -d '[:space:]' < release/signing-cert.sha256 \
+            | tr '[:upper:]' '[:lower:]')
+          if [ "$previous_signer" = "$expected" ]; then
+            echo "UPGRADE_BASE_APK=$previous_apk" >> "$GITHUB_ENV"
+            echo "Will verify an in-place upgrade from $previous_tag."
+          else
+            echo "Previous release uses the retired signature; this build establishes the new permanent baseline."
+          fi
+
+      - name: Install, upgrade and launch smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            if [ -n "${UPGRADE_BASE_APK:-}" ]; then
+              adb install "$UPGRADE_BASE_APK"
+              adb install -r app/build/outputs/apk/release/app-release.apk
+            else
+              adb install app/build/outputs/apk/release/app-release.apk
+            fi
+            adb shell am start -W -n com.combustible12.hdresourceextractor/.MainActivity
+            adb shell pm path com.combustible12.hdresourceextractor
+
       - name: Publish versioned release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -55,7 +141,8 @@ jobs:
             echo "Release $tag already exists; not overwriting it."
             exit 0
           fi
-          cp app/build/outputs/apk/debug/app-debug.apk "HDResourceExtractor-$tag.apk"
-          gh release create "$tag" "HDResourceExtractor-$tag.apk" \
+          asset="HDResourceExtractor-$tag.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$asset"
+          gh release create "$tag" "$asset" \
             --title "$tag" \
-            --notes "Image, video, HLS and one-tap upgrade improvements."
+            --notes "Permanent release signing baseline. Future one-tap updates are verified against the same signing certificate."
