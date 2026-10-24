@@ -73,7 +73,12 @@ class AppUpdater(context: Context) {
         if (prefs.getString(KEY_STATUS, "") == STATUS_DOWNLOADING) {
             val url = prefs.getString(KEY_URL, "").orEmpty()
             if (url.isNotBlank()) UpdateDownloadService.start(app, url, targetVersion)
-            onMessage("新版安装包正在下载，通知栏会显示实时进度")
+            val percent = prefs.getInt(KEY_PROGRESS, -1)
+            onMessage(if (percent >= 0) "新版安装包正在下载 · $percent%" else "新版安装包正在连接下载服务器")
+            return true
+        }
+        if (!force && prefs.getString(KEY_STATUS, "") == STATUS_FAILED) {
+            onMessage("上次升级下载失败：${prefs.getString(KEY_ERROR, "未知错误")}")
             return true
         }
         // Remove false pending jobs produced by older versions on affected OEM devices.
@@ -90,6 +95,10 @@ class AppUpdater(context: Context) {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.getStringExtra(UpdateDownloadService.EXTRA_VERSION) != version) return
+                if (intent.action == UpdateDownloadService.ACTION_PROGRESS) {
+                    onMessage(intent.getStringExtra(UpdateDownloadService.EXTRA_MESSAGE).orEmpty())
+                    return
+                }
                 runCatching { app.unregisterReceiver(this) }
                 if (intent.getBooleanExtra(UpdateDownloadService.EXTRA_SUCCESS, false)) {
                     runCatching { recoverPendingUpdate(true, onMessage) }
@@ -97,10 +106,11 @@ class AppUpdater(context: Context) {
                 } else onMessage("升级下载失败：${intent.getStringExtra(UpdateDownloadService.EXTRA_ERROR).orEmpty()}")
             }
         }
-        ContextCompat.registerReceiver(app, receiver, IntentFilter(UpdateDownloadService.ACTION_FINISHED), ContextCompat.RECEIVER_NOT_EXPORTED)
+        val filter = IntentFilter(UpdateDownloadService.ACTION_FINISHED).apply { addAction(UpdateDownloadService.ACTION_PROGRESS) }
+        ContextCompat.registerReceiver(app, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         prefs.edit().putString(KEY_VERSION, version).putString(KEY_URL, url)
             .putString(KEY_PATH, apk.absolutePath).putString(KEY_STATUS, STATUS_DOWNLOADING)
-            .remove("download_id").commit()
+            .putInt(KEY_PROGRESS, -1).remove(KEY_ERROR).remove("download_id").commit()
         UpdateDownloadService.start(app, url, version)
         onMessage("发现新版本 $version，已开始直接下载")
     }
@@ -142,6 +152,9 @@ class AppUpdater(context: Context) {
         const val KEY_URL = "download_url"
         const val KEY_PATH = "apk_path"
         const val KEY_STATUS = "download_status"
+        const val KEY_PROGRESS = "download_progress"
+        const val KEY_ERROR = "download_error"
+        const val KEY_VALIDATOR = "download_validator"
         const val KEY_AWAIT_PERMISSION = "await_permission"
         const val STATUS_DOWNLOADING = "downloading"
         const val STATUS_COMPLETE = "complete"
