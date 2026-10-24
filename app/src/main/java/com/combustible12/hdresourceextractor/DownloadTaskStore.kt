@@ -6,6 +6,7 @@ import org.json.JSONObject
 
 /** All instances serialize read/modify/commit through one process-wide lock. */
 class DownloadTaskStore(context: Context) {
+    private val app = context.applicationContext
     private val prefs = context.getSharedPreferences("download_task_store", Context.MODE_PRIVATE)
     data class Task(val id: String, val url: String, val kind: String, val status: String,
         val progress: Int = 0, val detail: String = "", val systemId: Long = -1L,
@@ -36,6 +37,9 @@ class DownloadTaskStore(context: Context) {
             cookie: String = "", name: String = "", sources: String = "[]"): Task = synchronized(lock) {
         val tasks = decode()
         val identity = ResourceIdentity.of(url)
+        // A completed row is not proof that the user still has the MediaStore file.
+        // Remove stale completion records so deleted files can be downloaded again.
+        tasks.removeAll { ResourceIdentity.of(it.url) == identity && it.status == "completed" && !MediaPublisher.saved(app, it.url) }
         check(tasks.none { ResourceIdentity.of(it.url) == identity && it.status !in listOf("failed", "cancelled") }) {
             if (tasks.any { ResourceIdentity.of(it.url) == identity && it.status == "completed" }) "此资源已下载保存" else "此资源已在下载任务中"
         }
