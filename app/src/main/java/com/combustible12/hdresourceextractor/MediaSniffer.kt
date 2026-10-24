@@ -4,6 +4,20 @@ import java.io.File
 
 /** A 200 login/challenge response is not a saved image. Detect real formats before publishing. */
 object MediaSniffer {
+    enum class Manifest { HLS, DASH }
+    fun manifest(file: File, contentType: String): Manifest? {
+        val head = file.inputStream().bufferedReader(Charsets.UTF_8).use { reader ->
+            val chars = CharArray(8192)
+            val count = reader.read(chars)
+            if (count <= 0) "" else String(chars, 0, count)
+        }.trimStart()
+        val mime = contentType.substringBefore(';').trim().lowercase()
+        return when {
+            head.startsWith("#EXTM3U") || mime.contains("mpegurl") -> Manifest.HLS
+            Regex("""<(?:\w+:)?MPD(?:\s|>)""", RegexOption.IGNORE_CASE).containsMatchIn(head) || mime.contains("dash+xml") -> Manifest.DASH
+            else -> null
+        }
+    }
     fun detect(file: File, contentType: String, name: String): String {
         val bytes = file.inputStream().use { input -> val b = ByteArray(512); b.copyOf(input.read(b).coerceAtLeast(0)) }
         require(bytes.isNotEmpty()) { "下载文件为空" }
