@@ -54,8 +54,8 @@ jobs:
           chmod 600 "$keystore"
           echo "HDRESOURCEEXTRACTOR_KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
 
-      - name: Guard network permission and recovery crash regression
-        run: gradle :app:testDebugUnitTest --tests com.combustible12.hdresourceextractor.DownloadServiceRecoveryTest --no-daemon
+      - name: Run download lifecycle and media regression tests
+        run: gradle :app:testDebugUnitTest --no-daemon
 
       - name: Build signed release APK
         run: gradle :app:assembleRelease --no-daemon --stacktrace

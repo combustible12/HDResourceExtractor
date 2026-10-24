@@ -68,6 +68,13 @@ object MediaPublisher {
         if (raw != null) prefs.edit().remove(key).commit()
         return false
     }
+    internal fun collection(mime: String, sdk: Int): Uri = when {
+        mime.startsWith("audio/") -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        mime.startsWith("video/") -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        mime.startsWith("image/") -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        sdk >= 29 -> MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        else -> MediaStore.Files.getContentUri("external")
+    }
     @Synchronized fun aliasSaved(context: Context, original: String, source: String) {
         val prefs = context.getSharedPreferences("saved_resources", Context.MODE_PRIVATE)
         val uri = prefs.getString(ResourceIdentity.of(source), null)
@@ -96,17 +103,17 @@ object MediaPublisher {
         val resolver = context.contentResolver
         val pendingKey = "pending_$key"
         prefs.getString(pendingKey, null)?.let { runCatching { resolver.delete(Uri.parse(it), null, null) } }
-        val video = mime.startsWith("video/") || mime.startsWith("audio/")
+        val video = mime.startsWith("video/")
+        val audio = mime.startsWith("audio/")
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, mime)
             if (Build.VERSION.SDK_INT >= 29) {
-                put(MediaStore.MediaColumns.RELATIVE_PATH, (if (video) "Movies" else if (mime.startsWith("image/")) "Pictures" else "Download") + "/HDResourceExtractor")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, (if (video) "Movies" else if (audio) "Music" else if (mime.startsWith("image/")) "Pictures" else "Download") + "/HDResourceExtractor")
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
-        val collection = if (Build.VERSION.SDK_INT >= 29 && !video && !mime.startsWith("image/")) MediaStore.Downloads.EXTERNAL_CONTENT_URI
-            else if (video) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val collection = collection(mime, Build.VERSION.SDK_INT)
         c?.check()
         val uri = resolver.insert(collection, values) ?: error("无法创建输出文件")
         check(prefs.edit().putString(pendingKey, uri.toString()).commit())

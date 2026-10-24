@@ -81,7 +81,7 @@ class UpdateDownloadService : Service() {
             prefs.edit().putString(AppUpdater.KEY_STATUS, AppUpdater.STATUS_FAILED)
                 .putString(AppUpdater.KEY_ERROR, e.message ?: "未知错误").commit()
             finish(version, false, "升级下载中断，点击返回重试", e.message ?: "未知错误")
-        } finally { wakeLock?.let { if (it.isHeld) it.release() } }
+        } finally { releaseWakeLock() }
     }
 
     private fun notification(version: String, text: String, percent: Int, ongoing: Boolean): Notification {
@@ -106,6 +106,12 @@ class UpdateDownloadService : Service() {
         stopSelf()
     }
 
+    @Synchronized private fun releaseWakeLock() {
+        val held = wakeLock
+        wakeLock = null
+        if (held?.isHeld == true) held.release()
+    }
+
     override fun onTimeout(startId: Int, fgsType: Int) {
         control?.stop(true)
         stopForeground(STOP_FOREGROUND_DETACH)
@@ -113,7 +119,7 @@ class UpdateDownloadService : Service() {
     }
     override fun onDestroy() {
         control?.stop(true)
-        wakeLock?.let { if (it.isHeld) it.release() }
+        releaseWakeLock()
         super.onDestroy()
     }
     override fun onBind(intent: Intent?): IBinder? = null

@@ -61,6 +61,7 @@ class MainActivity : AppCompatActivity() {
 
     private var pendingSharedText: String = ""
     private var currentPageUrl: String = ""
+    @Volatile private var pageGeneration = 0L
     private var isXhsSession: Boolean = false
     private var isDouyinSession: Boolean = false
     private var xhsFallbackShown: Boolean = false
@@ -117,6 +118,11 @@ class MainActivity : AppCompatActivity() {
     private fun scheduleAutoLinkCheck() {
         handler.removeCallbacks(autoLinkCheck)
         handler.postDelayed(autoLinkCheck, 150)
+    }
+
+    private fun postScanDelayed(action: () -> Unit, delay: Long) {
+        val generation = pageGeneration
+        handler.postDelayed({ if (!isDestroyed && generation == pageGeneration) action() }, delay)
     }
 
     private fun stopWatchingClipboard() {
@@ -687,6 +693,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
+                if (isDestroyed || url == "about:blank" || url != view?.url) return
                 if (!url.isNullOrBlank() && url != "about:blank") {
                     currentPageUrl = url
                 }
@@ -695,21 +702,21 @@ class MainActivity : AppCompatActivity() {
                     statusText.text = "正在识别正文媒体资源…"
                     scanXhsNoteResources(silent = true)
                     scanStructuredNote()
-                    handler.postDelayed({ scanXhsNoteResources(silent = true) }, 800)
-                    handler.postDelayed({ scanXhsNoteResources(silent = true); scanStructuredNote() }, 2200)
-                    handler.postDelayed({ finalizeXhsResults(allowFallback = false) }, 3000)
-                    handler.postDelayed({ scanXhsNoteResources(silent = true); scanStructuredNote() }, 5000)
-                    handler.postDelayed({ finalizeXhsResults(allowFallback = true) }, 6500)
-                    handler.postDelayed({ scanXhsNoteResources(silent = true) }, 10000)
-                    handler.postDelayed({ finalizeXhsResults(allowFallback = true) }, 12000)
+                    postScanDelayed({ scanXhsNoteResources(silent = true) }, 800)
+                    postScanDelayed({ scanXhsNoteResources(silent = true); scanStructuredNote() }, 2200)
+                    postScanDelayed({ finalizeXhsResults(allowFallback = false) }, 3000)
+                    postScanDelayed({ scanXhsNoteResources(silent = true); scanStructuredNote() }, 5000)
+                    postScanDelayed({ finalizeXhsResults(allowFallback = true) }, 6500)
+                    postScanDelayed({ scanXhsNoteResources(silent = true) }, 10000)
+                    postScanDelayed({ finalizeXhsResults(allowFallback = true) }, 12000)
                 } else {
                     statusText.text = "网页已打开，正在扫描高清资源…"
                     scanDomResources()
-                    handler.postDelayed({ scanDomResources(silent = true) }, 1500)
-                    handler.postDelayed({ scanDomResources(silent = true) }, 4000)
-                    handler.postDelayed({ scanDomResources(silent = true) }, 7000)
-                    handler.postDelayed({ scanDomResources(silent = true) }, 11000)
-                    handler.postDelayed({ scanDomResources(silent = true) }, 16000)
+                    postScanDelayed({ scanDomResources(silent = true) }, 1500)
+                    postScanDelayed({ scanDomResources(silent = true) }, 4000)
+                    postScanDelayed({ scanDomResources(silent = true) }, 7000)
+                    postScanDelayed({ scanDomResources(silent = true) }, 11000)
+                    postScanDelayed({ scanDomResources(silent = true) }, 16000)
                 }
             }
         }
@@ -734,7 +741,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 statusText.text = "已拦截小红书 APP 跳转，继续提取正文图片…"
                 scanXhsNoteResources(silent = true)
-                handler.postDelayed({ finalizeXhsResults(allowFallback = true) }, 700)
+                postScanDelayed({ finalizeXhsResults(allowFallback = true) }, 700)
             }
         }
         return true
@@ -773,6 +780,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        pageGeneration++
         urlInput.setText(url)
         currentPageUrl = url
         isXhsSession = isXhsUrl(url)
@@ -805,7 +813,7 @@ class MainActivity : AppCompatActivity() {
             statusText.text = "正在重新识别媒体资源…"
             scanXhsNoteResources(silent = true)
             scanStructuredNote()
-            handler.postDelayed({ finalizeXhsResults(allowFallback = true) }, 900)
+            postScanDelayed({ finalizeXhsResults(allowFallback = true) }, 900)
         } else {
             scanDomResources()
         }
@@ -1288,7 +1296,7 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun doneXhs(count: Int) {
-            handler.postDelayed({ finalizeXhsResults(allowFallback = false) }, 120)
+            postScanDelayed({ finalizeXhsResults(allowFallback = false) }, 120)
         }
     }
 

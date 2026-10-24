@@ -22,16 +22,21 @@ object MediaSniffer {
         val bytes = file.inputStream().use { input -> val b = ByteArray(512); b.copyOf(input.read(b).coerceAtLeast(0)) }
         require(bytes.isNotEmpty()) { "下载文件为空" }
         val text = bytes.toString(Charsets.ISO_8859_1)
-        val trimmed = text.trimStart().lowercase()
-        require(!trimmed.startsWith("<!doctype html") && !trimmed.startsWith("<html") && !trimmed.startsWith("{\"") && !trimmed.startsWith("<head")) { "服务器返回网页或登录提示，请重新打开原页面提取" }
+        val trimmed = bytes.toString(Charsets.UTF_8).trimStart('\uFEFF', ' ' , '\n', '\r', '\t').lowercase()
+        val svg = trimmed.startsWith("<svg") || trimmed.startsWith("<?xml") && trimmed.contains("<svg")
+        require(svg || !(trimmed.startsWith("<") || trimmed.startsWith("{") || trimmed.startsWith("["))) {
+            "服务器返回网页或错误提示，请重新打开原页面提取"
+        }
         val mime = contentType.substringBefore(';').trim().lowercase()
         fun prefix(vararg values: Int) = bytes.size >= values.size && values.indices.all { bytes[it].toInt() and 255 == values[it] }
         return when {
             prefix(0xff, 0xd8, 0xff) -> "image/jpeg"
             prefix(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a) -> "image/png"
             text.startsWith("GIF8") -> "image/gif"
-            text.startsWith("RIFF") && text.substring(8, minOf(12, text.length)) == "WEBP" -> "image/webp"
+            text.length >= 12 && text.startsWith("RIFF") && text.substring(8, 12) == "WEBP" -> "image/webp"
             text.startsWith("BM") -> "image/bmp"
+            prefix(0x49, 0x49, 0x2a, 0x00) || prefix(0x4d, 0x4d, 0x00, 0x2a) -> "image/tiff"
+            prefix(0x00, 0x00, 0x01, 0x00) -> "image/x-icon"
             text.length >= 12 && text.substring(4, 8) == "ftyp" -> when (text.substring(8, 12)) {
                 "avif", "avis" -> "image/avif"
                 "heic", "heix", "mif1", "msf1" -> "image/heif"
@@ -42,7 +47,9 @@ object MediaSniffer {
             text.startsWith("ID3") -> "audio/mpeg"
             text.startsWith("OggS") -> "audio/ogg"
             trimmed.startsWith("<svg") || trimmed.startsWith("<?xml") && trimmed.contains("<svg") -> "image/svg+xml"
-            mime.startsWith("image/") || mime.startsWith("video/") || mime.startsWith("audio/") -> mime
+            mime == "text/html" || mime.contains("json") || mime.startsWith("text/") -> error("此链接未返回媒体文件，请重新提取")
+            mime.startsWith("image/") -> error("图片文件头无效，请重新提取原图地址")
+            mime.startsWith("video/") || mime.startsWith("audio/") -> mime
             mime == "text/html" || mime.contains("json") -> error("此链接未返回媒体文件，请重新提取")
             else -> android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.').lowercase()) ?: "application/octet-stream"
         }

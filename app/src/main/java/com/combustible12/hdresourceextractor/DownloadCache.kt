@@ -68,6 +68,7 @@ object DownloadCache {
             var expected = -1L
             var total = -1L
             var validator = ""
+            var responseAccepted = false
             try {
                 conn.connectTimeout = 20000; conn.readTimeout = 30000
                 conn.setRequestProperty("Accept-Encoding", "identity")
@@ -100,6 +101,7 @@ object DownloadCache {
                     expected = conn.contentLengthLong
                     total = end?.let { it - start + 1 } ?: expected
                 }
+                responseAccepted = true
                 RandomAccessFile(target, "rw").use { out ->
                     out.setLength(offset); out.seek(offset)
                     val hasher = java.security.MessageDigest.getInstance("SHA-256")
@@ -140,17 +142,17 @@ object DownloadCache {
                 }
                 control?.check()
                 write(metaFile, JSONObject().put("identity", identity).put("bytes", target.length())
-                    .put("validator", validator).put("contentType", conn.contentType.orEmpty()).put("sha256", digest(target)).put("complete", true))
+                    .put("validator", validator).put("contentType", conn.contentType.orEmpty()).put("finalUrl", conn.url.toString()).put("sha256", digest(target)).put("complete", true))
                 return target
             } catch (e: Exception) {
                 // Preserve only bytes actually flushed to disk, plus their validator and digest.
-                if (target.exists() && target.length() > 0) {
+                if (responseAccepted && target.exists() && target.length() > 0) {
                     write(metaFile, JSONObject().put("identity", identity).put("bytes", target.length())
                         .put("validator", validator).put("sha256", digest(target)).put("complete", false))
                 }
                 control?.check()
                 failure = e; meta = json(metaFile)
-                offset = if (validator.isNotEmpty()) target.length() else 0
+                offset = if (meta.optString("validator").isNotEmpty()) target.length() else 0
                 if (offset == 0L) target.delete()
             } finally { control?.detach(conn); conn.disconnect() }
         }

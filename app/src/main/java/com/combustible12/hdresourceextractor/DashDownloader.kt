@@ -18,7 +18,8 @@ class DashDownloader(private val context: Context) {
                     // Re-fetch the manifest; segment identities bind checkpoints to the actual selected URLs.
                     val manifest = File(dir, "manifest"); manifest.delete(); File(manifest.path + ".json").delete()
                     DownloadCache.fetch(url, manifest, agent, referer, cookie, control)
-                    val tracks = parse(url, manifest.readText())
+                    val manifestUrl = DownloadCache.json(File(manifest.path + ".json")).optString("finalUrl", url)
+                    val tracks = parse(manifestUrl, manifest.readText())
                     val groups = tracks.groupBy { it.period }.toSortedMap()
                     val selected = groups.map { (_, options) ->
                         fun choose(type: String): Track? = options.filter { it.type == type }
@@ -38,7 +39,7 @@ class DashDownloader(private val context: Context) {
                         }
                         val output = File(dir, "period_${track.period}_${track.type}")
                         output.outputStream().use { out -> parts.forEach { part ->
-                            control?.check(); part.inputStream().use { it.copyTo(out, 128 * 1024) }
+                            control?.check(); part.inputStream().use { copy -> copyChecked(copy, out, control) }
                         } }
                         track.type to output
                     } }

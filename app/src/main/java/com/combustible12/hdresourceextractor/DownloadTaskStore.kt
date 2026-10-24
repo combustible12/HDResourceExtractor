@@ -13,7 +13,15 @@ class DownloadTaskStore(context: Context) {
         val agent: String = "", val referer: String = "", val cookie: String = "",
         val name: String = "", val output: String = "", val sources: String = "[]")
     private fun decode(): MutableList<Task> {
-        val arr = JSONArray(prefs.getString("tasks", "[]") ?: "[]")
+        val raw = prefs.getString("tasks", "[]") ?: "[]"
+        val arr = try { JSONArray(raw) } catch (e: Exception) {
+            val backup = prefs.getString("tasks_last_good", "[]") ?: "[]"
+            val restored = runCatching { JSONArray(backup) }.getOrElse { JSONArray() }
+            // Preserve the unreadable original rather than throwing on every startup/task refresh.
+            prefs.edit().putString("tasks_corrupt_backup", raw).putString("tasks", restored.toString()).commit()
+            android.util.Log.w("DownloadTaskStore", "Restored readable task backup", e)
+            restored
+        }
         return (0 until arr.length()).mapNotNull { i -> runCatching {
             val o = arr.getJSONObject(i)
             Task(o.getString("id"), o.getString("url"), o.getString("kind"), o.getString("status"),
@@ -29,7 +37,7 @@ class DownloadTaskStore(context: Context) {
             .put("status", t.status).put("progress", t.progress).put("detail", t.detail)
             .put("systemId", t.systemId).put("agent", t.agent).put("referer", t.referer)
             .put("cookie", t.cookie).put("name", t.name).put("output", t.output).put("sources", t.sources)) }
-        check(prefs.edit().putString("tasks", arr.toString()).commit()) { "无法保存任务状态" }
+        check(prefs.edit().putString("tasks", arr.toString()).putString("tasks_last_good", arr.toString()).commit()) { "无法保存任务状态" }
     }
     fun all(): List<Task> = synchronized(lock) { decode().asReversed() }
     fun get(id: String): Task? = synchronized(lock) { decode().firstOrNull { it.id == id } }

@@ -16,7 +16,9 @@ class SegmentTaskQueue private constructor(context: Context) {
         fun check() { if (committed) return; if (cancelled.get()) throw Stopped(false); if (paused.get()) throw Stopped(true) }
         fun attach(c: java.net.HttpURLConnection) { connection = c; check() }
         fun detach(c: java.net.HttpURLConnection) { if (connection === c) connection = null }
-        @Synchronized fun stop(pause: Boolean) { if (committed) return; if (pause) paused.set(true) else cancelled.set(true); connection?.disconnect() }
+        @Synchronized fun stop(pause: Boolean) { if (committed) return; if (pause) paused.set(true) else cancelled.set(true); connection?.let { active ->
+            Thread({ runCatching { active.disconnect() } }, "download-disconnect").apply { isDaemon = true; start() }
+        } }
     }
     private val app = context.applicationContext
     private val store = DownloadTaskStore(app)

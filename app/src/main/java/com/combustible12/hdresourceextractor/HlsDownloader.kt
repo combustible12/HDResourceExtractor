@@ -6,8 +6,8 @@ import java.net.URL
 
 /** Static clear HLS: persist and verify each segment before assembling the output. */
 class HlsDownloader(private val context: Context) {
-    private data class Piece(val url: String, val range: String? = null)
-    private data class Playlist(val groups: List<List<Piece>>, val audio: String? = null)
+    internal data class Piece(val url: String, val range: String? = null)
+    internal data class Playlist(val groups: List<List<Piece>>, val audio: String? = null)
     fun download(url: String, userAgent: String, referer: String, cookie: String,
         callback: (Boolean, String) -> Unit, control: SegmentTaskQueue.Control? = null,
         progress: ((Int, String) -> Unit)? = null) {
@@ -17,10 +17,11 @@ class HlsDownloader(private val context: Context) {
                 if (!MediaPublisher.saved(context, url)) {
                     val dir = DownloadCache.dir(context, url)
                     var manifestIndex = 0
-                    fun load(source: String): String {
+                    fun load(source: String): Pair<String, String> {
                         val file = File(dir, "playlist_${manifestIndex++}")
                         file.delete(); File(file.path + ".json").delete()
-                        return DownloadCache.fetch(source, file, userAgent, referer, cookie, control).readText()
+                        DownloadCache.fetch(source, file, userAgent, referer, cookie, control)
+                        return file.readText() to DownloadCache.json(File(file.path + ".json")).optString("finalUrl", source)
                     }
                     val video = resolve(url, 0, ::load)
                     val audio = video.audio?.let { resolve(it, 0, ::load) }
@@ -33,7 +34,7 @@ class HlsDownloader(private val context: Context) {
                             control?.check()
                             val file = DownloadCache.fetch(piece.url, File(dir, ResourceIdentity.hash(piece.url + "|" + piece.range.orEmpty())),
                                 userAgent, referer, cookie, control, piece.range)
-                            file.inputStream().use { it.copyTo(out, 128 * 1024) }
+                            file.inputStream().use { copy -> copyChecked(copy, out, control) }
                             done++; progress?.invoke(done * 85 / total, "片段 $done/$total")
                         } }
                         return target
@@ -61,13 +62,13 @@ class HlsDownloader(private val context: Context) {
         try { ex.setDataSource(file.path); return (0 until ex.trackCount).any { ex.getTrackFormat(it).getString(android.media.MediaFormat.KEY_MIME)?.startsWith("audio/") == true } }
         finally { ex.release() }
     }
-    private fun resolve(url: String, depth: Int, load: (String) -> String): Playlist {
+    internal fun resolve(url: String, depth: Int, load: (String) -> Pair<String, String>): Playlist {
         require(depth < 6) { "HLS 嵌套过深" }
-        val body = load(url)
+        val (body, finalUrl) = load(url)
         require(body.trimStart().startsWith("#EXTM3U")) { "无效 HLS 播放列表" }
         val lines = body.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList()
         fun attr(line: String, key: String): String = Regex("(?:^|[:,])$key=(?:\"([^\"]*)\"|([^,]*))").find(line)?.let { it.groupValues[1].ifBlank { it.groupValues[2] } }.orEmpty()
-        fun absolute(raw: String) = URL(URL(url), raw).toString()
+        fun absolute(raw: String) = URL(URL(finalUrl), raw).toString()
         val variants = lines.indices.filter { lines[it].startsWith("#EXT-X-STREAM-INF:") }
         if (variants.isNotEmpty()) {
             val best = variants.maxBy { attr(lines[it], "BANDWIDTH").toLongOrNull() ?: 0 }
