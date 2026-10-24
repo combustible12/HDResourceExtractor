@@ -42,6 +42,8 @@ class UpdateDownloadService : Service() {
             val target = File(directory, "HDResourceExtractor-$version.apk")
             val partial = File(directory, "${target.name}.part")
             val existing = partial.length()
+            val prefs = getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE)
+            val previousValidator = prefs.getString(AppUpdater.KEY_VALIDATOR, "").orEmpty()
             connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = true
                 connectTimeout = 20000
@@ -49,14 +51,37 @@ class UpdateDownloadService : Service() {
                 setRequestProperty("User-Agent", "HDResourceExtractor-Android/$version")
                 setRequestProperty("Accept", "application/octet-stream")
                 if (existing > 0) setRequestProperty("Range", "bytes=$existing-")
+                if (existing > 0 && previousValidator.isNotBlank()) setRequestProperty("If-Range", previousValidator)
             }
             val code = connection.responseCode
+            if (code == 416 && existing > 0) {
+                partial.delete()
+                prefs.edit().remove(AppUpdater.KEY_VALIDATOR).commit()
+                connection.disconnect(); connection = null
+                download(url, version)
+                return
+            }
             require(code == HttpURLConnection.HTTP_OK || code == HttpURLConnection.HTTP_PARTIAL) { "HTTP $code" }
             val append = code == HttpURLConnection.HTTP_PARTIAL && existing > 0
+            val validator = connection.getHeaderField("ETag")?.takeUnless { it.startsWith("W/") }
+                ?: connection.getHeaderField("Last-Modified").orEmpty()
+            if (append) {
+                val rangeStart = Regex("bytes (\\d+)-(\\d+)/(\\d+|\\*)")
+                    .matchEntire(connection.getHeaderField("Content-Range").orEmpty())?.groupValues?.get(1)?.toLongOrNull()
+                val changed = rangeStart != existing || previousValidator.isNotBlank() && validator.isNotBlank() && previousValidator != validator
+                if (changed) {
+                    partial.delete()
+                    prefs.edit().remove(AppUpdater.KEY_VALIDATOR).commit()
+                    connection.disconnect(); connection = null
+                    download(url, version)
+                    return
+                }
+            }
             val base = if (append) existing else 0L
             val responseLength = connection.contentLengthLong
             val total = if (responseLength > 0) base + responseLength else -1L
             if (!append && partial.exists()) partial.delete()
+            if (validator.isNotBlank()) prefs.edit().putString(AppUpdater.KEY_VALIDATOR, validator).commit()
             connection.inputStream.use { input ->
                 FileOutputStream(partial, append).use { output ->
                     val buffer = ByteArray(128 * 1024)
@@ -71,7 +96,11 @@ class UpdateDownloadService : Service() {
                         if (now - lastNotify >= 500L) {
                             lastNotify = now
                             val percent = if (total > 0) (downloaded * 100.0 / total).roundToInt().coerceIn(0, 100) else -1
-                            show(notification(version, if (percent >= 0) "安装包下载中 · $percent%" else "安装包下载中", percent, true))
+                            val message = if (percent >= 0) "安装包下载中 · $percent%" else "安装包下载中 · ${downloaded / 1024} KB"
+                            prefs.edit().putInt(AppUpdater.KEY_PROGRESS, percent).commit()
+                            show(notification(version, message, percent, true))
+                            sendBroadcast(Intent(ACTION_PROGRESS).setPackage(packageName)
+                                .putExtra(EXTRA_VERSION, version).putExtra(EXTRA_MESSAGE, message))
                         }
                     }
                     output.fd.sync()
@@ -85,11 +114,18 @@ class UpdateDownloadService : Service() {
             check(partial.renameTo(target)) { "无法保存安装包" }
             getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE).edit()
                 .putString(AppUpdater.KEY_PATH, target.absolutePath)
-                .putString(AppUpdater.KEY_STATUS, AppUpdater.STATUS_COMPLETE).commit()
+                .putString(AppUpdater.KEY_STATUS, AppUpdater.STATUS_COMPLETE)
+                .putInt(AppUpdater.KEY_PROGRESS, 100).remove(AppUpdater.KEY_ERROR).commit()
             finish(version, true, "新版本 $version 已下载，点击继续安装", null)
         } catch (e: Exception) {
+            if (e.message.orEmpty().contains("校验") || e.message.orEmpty().contains("版本不匹配")) {
+                getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                    ?.resolve("HDResourceExtractor-$version.apk.part")?.delete()
+                getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE).edit().remove(AppUpdater.KEY_VALIDATOR).commit()
+            }
             getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE).edit()
-                .putString(AppUpdater.KEY_STATUS, AppUpdater.STATUS_FAILED).commit()
+                .putString(AppUpdater.KEY_STATUS, AppUpdater.STATUS_FAILED)
+                .putString(AppUpdater.KEY_ERROR, e.message ?: "未知错误").commit()
             finish(version, false, "升级下载失败，点击返回重试", e.message ?: "未知错误")
         } finally { connection?.disconnect() }
     }
@@ -121,9 +157,11 @@ class UpdateDownloadService : Service() {
 
     companion object {
         const val ACTION_FINISHED = "com.combustible12.hdresourceextractor.UPDATE_FINISHED"
+        const val ACTION_PROGRESS = "com.combustible12.hdresourceextractor.UPDATE_PROGRESS"
         const val EXTRA_VERSION = "version"
         const val EXTRA_SUCCESS = "success"
         const val EXTRA_ERROR = "error"
+        const val EXTRA_MESSAGE = "message"
         private const val EXTRA_URL = "url"
         private const val CHANNEL_ID = "app_updates"
         private const val NOTIFICATION_ID = 310
