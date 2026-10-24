@@ -69,7 +69,11 @@ class AppUpdater(context: Context) {
                         return true
                     }
                     DownloadManager.STATUS_FAILED -> { dm.remove(id); prefs.edit().remove("download_id").commit(); return false }
-                    else -> { onMessage("新版安装包正在下载，可在通知栏查看"); return true }
+                    else -> {
+                        UpdateDownloadService.start(app, id, prefs.getString("version", "新版本").orEmpty())
+                        onMessage("新版安装包正在下载，通知栏会显示实时进度")
+                        return true
+                    }
                 }
             }
             prefs.edit().remove("download_id").commit()
@@ -110,7 +114,8 @@ class AppUpdater(context: Context) {
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setDestinationInExternalFilesDir(app, Environment.DIRECTORY_DOWNLOADS, filename))
             check(prefs.edit().putString("version", version).putLong("download_id", id).commit())
-            onMessage("发现新版本 $version，正在下载，完成后打开安装界面")
+            UpdateDownloadService.start(app, id, version)
+            onMessage("发现新版本 $version，正在下载，通知栏会显示实时进度")
         } catch (e: Exception) { runCatching { app.unregisterReceiver(receiver) }; throw e }
     }
     companion object {
