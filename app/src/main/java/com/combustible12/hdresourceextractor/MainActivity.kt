@@ -1339,53 +1339,89 @@ class MainActivity : AppCompatActivity() {
             lower.contains("video")
     }
 
+    private enum class EnqueueState { QUEUED, SAVED, ACTIVE, PAUSED, FAILED }
+    private data class EnqueueResult(val state: EnqueueState, val message: String)
+
     private fun saveAllResources() {
         val snapshot = visibleResources.toList()
-        if (snapshot.isEmpty()) return
-
-        var queued = 0
-        snapshot.forEachIndexed { index, url ->
-            if (enqueueDownload(url, index, showToast = false)) queued++
+        if (snapshot.isEmpty()) { statusText.text = "暂无可保存的媒体资源"; return }
+        val outcomes = snapshot.mapIndexed { index, url -> enqueueDownload(url, index, showToast = false) }
+        fun count(state: EnqueueState) = outcomes.count { it.state == state }
+        val parts = mutableListOf<String>()
+        if (count(EnqueueState.QUEUED) > 0) parts.add("新加入 ${count(EnqueueState.QUEUED)} 个")
+        if (count(EnqueueState.SAVED) > 0) parts.add("${count(EnqueueState.SAVED)} 个已下载保存")
+        if (count(EnqueueState.ACTIVE) > 0) parts.add("${count(EnqueueState.ACTIVE)} 个已在下载队列")
+        if (count(EnqueueState.PAUSED) > 0) parts.add("${count(EnqueueState.PAUSED)} 个已暂停，请在任务管理恢复")
+        if (count(EnqueueState.FAILED) > 0) parts.add("${count(EnqueueState.FAILED)} 个添加失败")
+        val summary = parts.joinToString("；")
+        statusText.text = summary
+        Toast.makeText(this, summary, Toast.LENGTH_LONG).show()
+        val failures = outcomes.withIndex().filter { it.value.state == EnqueueState.FAILED }
+        if (failures.isNotEmpty()) {
+            val detail = failures.take(8).joinToString("\n\n") { "第 ${it.index + 1} 个资源：${it.value.message}" }
+            android.app.AlertDialog.Builder(this).setTitle("下载任务未全部添加")
+                .setMessage("$summary\n\n$detail")
+                .setPositiveButton("查看下载任务") { _, _ -> showDownloadTasks() }
+                .setNegativeButton("关闭", null).show()
         }
-
-        Toast.makeText(
-            this,
-            "已加入 $queued 个下载任务",
-            Toast.LENGTH_SHORT
-        ).show()
     }
 
-    private fun enqueueDownload(url: String, index: Int, showToast: Boolean): Boolean {
-        return try {
-            require(url.startsWith("http://") || url.startsWith("https://")) { "该资源不能直接下载" }
+    private fun enqueueDownload(url: String, index: Int, showToast: Boolean): EnqueueResult {
+        val outcome = try {
+            require(url.startsWith("http://") || url.startsWith("https://")) { "该资源不能直接下载，请重新提取实际媒体地址" }
             if (android.os.Build.VERSION.SDK_INT <= 28 && checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE), 103)
                 error("请允许存储权限后再次下载")
             }
-            check(taskStore.all().none { it.status == "cancelled" && ResourceIdentity.of(it.url) == ResourceIdentity.of(url) && SegmentTaskQueue.get(this).isActive(it.id) }) { "正在取消旧任务，请稍后重试" }
-            check(!MediaPublisher.saved(this, url)) { "此资源已下载保存" }
-            val path = Uri.parse(url).path.orEmpty().lowercase(Locale.US)
-            val kind = when { path.endsWith(".mpd") -> "DASH"; path.endsWith(".m3u8") -> "HLS"; else -> "FILE" }
-            val raw = Uri.parse(url).lastPathSegment.orEmpty().substringBefore('!')
-            val extension = guessExtension(url)
-            val safe = raw.replace(Regex("[^A-Za-z0-9._-]"), "_").take(75).ifBlank { "resource" }
-            val basename = safe.substringBeforeLast('.', safe)
-            // The URL identity prevents two different resources with the same source name colliding.
-            val name = basename + "_" + ResourceIdentity.of(url).take(12) + "." + extension
-            val fallbacks = org.json.JSONArray()
-            synchronized(xhsCandidates) { imageFallbacks[canonicalXhsKey(url)]?.forEach { candidate ->
-                if (candidate != url) fallbacks.put(org.json.JSONObject().put("url", candidate)
-                    .put("cookie", CookieManager.getInstance().getCookie(candidate).orEmpty()))
-            } }
-            taskStore.add(url, kind, sources = fallbacks.toString(), agent = webView.settings.userAgentString.orEmpty(),
-                referer = currentPageUrl, cookie = CookieManager.getInstance().getCookie(url).orEmpty(), name = name)
-            DownloadService.start(this)
-            if (showToast) Toast.makeText(this, "已加入下载队列", Toast.LENGTH_SHORT).show()
-            true
+            val identity = ResourceIdentity.of(url)
+            val queue = SegmentTaskQueue.get(this)
+            val old = taskStore.all().firstOrNull { ResourceIdentity.of(it.url) == identity && it.status !in listOf("failed", "cancelled", "completed") }
+            when {
+                MediaPublisher.saved(this, url) -> EnqueueResult(EnqueueState.SAVED, "此资源已下载保存")
+                old?.status == "paused" -> EnqueueResult(EnqueueState.PAUSED, "任务已暂停，请在下载任务管理中恢复")
+                old?.status in listOf("queued", "running") -> {
+                    // A previous foreground-service launch may have failed after the row was written.
+                    // Restart the scheduler instead of silently treating that orphan as a new download.
+                    try { DownloadService.start(this) }
+                    catch (e: Exception) {
+                        if (old != null && !queue.isActive(old.id)) taskStore.update(old.id, "failed", detail = "下载服务未启动：${e.message}")
+                        throw IllegalStateException("无法启动下载服务：${e.message}", e)
+                    }
+                    EnqueueResult(EnqueueState.ACTIVE, "此资源已在下载队列，已请求继续处理")
+                }
+                else -> {
+                    check(taskStore.all().none { it.status == "cancelled" && ResourceIdentity.of(it.url) == identity && queue.isActive(it.id) }) { "正在取消旧任务，请稍后重试" }
+                    val path = Uri.parse(url).path.orEmpty().lowercase(Locale.US)
+                    val kind = when { path.endsWith(".mpd") -> "DASH"; path.endsWith(".m3u8") -> "HLS"; else -> "FILE" }
+                    val raw = Uri.parse(url).lastPathSegment.orEmpty().substringBefore('!')
+                    val extension = guessExtension(url)
+                    val safe = raw.replace(Regex("[^A-Za-z0-9._-]"), "_").take(75).ifBlank { "resource" }
+                    val basename = safe.substringBeforeLast('.', safe)
+                    val name = basename + "_" + identity.take(12) + "." + extension
+                    val fallbacks = org.json.JSONArray()
+                    synchronized(xhsCandidates) { imageFallbacks[canonicalXhsKey(url)]?.forEach { candidate ->
+                        if (candidate != url) fallbacks.put(org.json.JSONObject().put("url", candidate)
+                            .put("cookie", CookieManager.getInstance().getCookie(candidate).orEmpty()))
+                    } }
+                    val task = taskStore.add(url, kind, sources = fallbacks.toString(), agent = webView.settings.userAgentString.orEmpty(),
+                        referer = webView.url?.takeIf { it.startsWith("http") } ?: currentPageUrl,
+                        cookie = CookieManager.getInstance().getCookie(url).orEmpty(), name = name)
+                    try { DownloadService.start(this) }
+                    catch (e: Exception) {
+                        if (!queue.isActive(task.id)) taskStore.update(task.id, "failed", detail = "下载服务未启动：${e.message}")
+                        throw IllegalStateException("无法启动下载服务：${e.message}", e)
+                    }
+                    EnqueueResult(EnqueueState.QUEUED, "已加入下载队列")
+                }
+            }
         } catch (e: Exception) {
-            if (showToast) Toast.makeText(this, e.message ?: "无法创建下载任务", Toast.LENGTH_LONG).show()
-            false
+            EnqueueResult(EnqueueState.FAILED, "${e.message ?: "无法创建下载任务"}（${e.javaClass.simpleName}）")
         }
+        if (showToast) {
+            statusText.text = outcome.message
+            Toast.makeText(this, outcome.message, Toast.LENGTH_LONG).show()
+        }
+        return outcome
     }
 
     private fun showDownloadTasks() {

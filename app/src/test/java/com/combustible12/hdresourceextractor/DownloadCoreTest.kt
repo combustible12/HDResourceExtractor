@@ -42,6 +42,12 @@ class DownloadCoreTest {
         assertNotEquals(ResourceIdentity.of("https://example.com/a?id=1"), ResourceIdentity.of("https://example.com/a?id=2"))
         assertNotEquals(ResourceIdentity.of("https://one.test/image.jpg"), ResourceIdentity.of("https://two.test/image.jpg"))
     }
+    @Test fun browserToleratedMediaUrlsCannotAbortTheWholeBatch() {
+        val malformed = "https://cdn.example.com/image[original].jpg?token=bad%escape"
+        assertEquals(ResourceIdentity.of(malformed), ResourceIdentity.of("$malformed#preview"))
+        assertNotEquals(ResourceIdentity.of(malformed), ResourceIdentity.of(malformed + "&variant=2"))
+        assertTrue(ResourceIdentity.of("https://cdn_host.example.com/video.mp4").isNotEmpty())
+    }
     @Test fun cancellationTakesPrecedenceOverPause() {
         val c = SegmentTaskQueue.Control(); c.paused.set(true); c.cancelled.set(true)
         try { c.check(); fail("must stop") } catch (e: SegmentTaskQueue.Stopped) { assertFalse(e.paused) }
