@@ -1,123 +1,135 @@
 package com.combustible12.hdresourceextractor
 
-import android.app.DownloadManager
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.app.Service
+import android.app.*
 import android.content.Context
 import android.content.Intent
-import android.os.Build
-import android.os.Handler
-import android.os.IBinder
-import android.os.Looper
+import android.os.*
+import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlin.math.roundToInt
 
-/** Owns the update progress notification because OEM download managers may hide theirs. */
+/** Foreground, resumable APK downloader independent of the OEM DownloadManager. */
 class UpdateDownloadService : Service() {
-    private val handler = Handler(Looper.getMainLooper())
-    private val manager by lazy { getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager }
-    private var downloadId = -1L
-    private var version = ""
-
-    private val poll = object : Runnable {
-        override fun run() {
-            if (downloadId <= 0) {
-                stopSelf()
-                return
-            }
-            var status = DownloadManager.STATUS_PENDING
-            var downloaded = 0L
-            var total = -1L
-            manager.query(DownloadManager.Query().setFilterById(downloadId))?.use { cursor ->
-                if (!cursor.moveToFirst()) {
-                    stopSelf()
-                    return
-                }
-                status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-                downloaded = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-                total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-            }
-            when (status) {
-                DownloadManager.STATUS_SUCCESSFUL -> finishNotification("新版本 $version 已下载，点击继续安装")
-                DownloadManager.STATUS_FAILED -> finishNotification("升级安装包下载失败，点击返回重试")
-                else -> {
-                    val percent = if (total > 0) ((downloaded * 100L) / total).toInt().coerceIn(0, 100) else -1
-                    getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(percent, true))
-                    handler.postDelayed(this, 750)
-                }
-            }
-        }
-    }
+    private var worker: Thread? = null
+    @Volatile private var stopped = false
 
     override fun onCreate() {
         super.onCreate()
-        if (Build.VERSION.SDK_INT >= 26) {
-            getSystemService(NotificationManager::class.java).createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "应用升级", NotificationManager.IMPORTANCE_LOW).apply {
-                    description = "显示升级安装包的下载进度"
-                }
-            )
-        }
+        if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "应用升级", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "显示升级安装包的下载进度"
+            }
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val prefs = getSharedPreferences("app_update", Context.MODE_PRIVATE)
-        downloadId = intent?.getLongExtra(EXTRA_ID, -1L)?.takeIf { it > 0 } ?: prefs.getLong("download_id", -1L)
-        version = intent?.getStringExtra(EXTRA_VERSION) ?: prefs.getString("version", "新版本").orEmpty()
-        startForeground(NOTIFICATION_ID, notification(-1, true))
-        handler.removeCallbacks(poll)
-        handler.post(poll)
+        val prefs = getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE)
+        val url = intent?.getStringExtra(EXTRA_URL) ?: prefs.getString(AppUpdater.KEY_URL, "").orEmpty()
+        val version = intent?.getStringExtra(EXTRA_VERSION) ?: prefs.getString(AppUpdater.KEY_VERSION, "").orEmpty()
+        startForeground(NOTIFICATION_ID, notification(version, "正在连接下载服务器…", -1, true))
+        if (worker?.isAlive != true) worker = Thread { download(url, version) }.apply { start() }
         return START_STICKY
     }
 
-    private fun notification(percent: Int, ongoing: Boolean, overrideText: String? = null): Notification {
-        val openApp = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val text = overrideText ?: if (percent >= 0) "安装包下载中 · $percent%" else "正在连接下载服务器…"
-        val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID) else Notification.Builder(this)
-        return builder
-            .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("HDResourceExtractor $version")
-            .setContentText(text)
-            .setContentIntent(openApp)
-            .setOnlyAlertOnce(true)
-            .setOngoing(ongoing)
-            .setAutoCancel(!ongoing)
-            .apply {
-                if (ongoing) {
-                    if (percent >= 0) setProgress(100, percent, false) else setProgress(0, 0, true)
+    private fun download(url: String, version: String) {
+        var connection: HttpURLConnection? = null
+        try {
+            require(url.startsWith("https://github.com/combustible12/HDResourceExtractor/releases/download/")) { "更新地址无效" }
+            val directory = getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                ?: error("无法创建下载目录")
+            val target = File(directory, "HDResourceExtractor-$version.apk")
+            val partial = File(directory, "${target.name}.part")
+            val existing = partial.length()
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = true
+                connectTimeout = 20000
+                readTimeout = 30000
+                setRequestProperty("User-Agent", "HDResourceExtractor-Android/$version")
+                setRequestProperty("Accept", "application/octet-stream")
+                if (existing > 0) setRequestProperty("Range", "bytes=$existing-")
+            }
+            val code = connection.responseCode
+            require(code == HttpURLConnection.HTTP_OK || code == HttpURLConnection.HTTP_PARTIAL) { "HTTP $code" }
+            val append = code == HttpURLConnection.HTTP_PARTIAL && existing > 0
+            val base = if (append) existing else 0L
+            val responseLength = connection.contentLengthLong
+            val total = if (responseLength > 0) base + responseLength else -1L
+            if (!append && partial.exists()) partial.delete()
+            connection.inputStream.use { input ->
+                FileOutputStream(partial, append).use { output ->
+                    val buffer = ByteArray(128 * 1024)
+                    var downloaded = base
+                    var lastNotify = 0L
+                    while (!stopped) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        downloaded += count
+                        val now = SystemClock.elapsedRealtime()
+                        if (now - lastNotify >= 500L) {
+                            lastNotify = now
+                            val percent = if (total > 0) (downloaded * 100.0 / total).roundToInt().coerceIn(0, 100) else -1
+                            show(notification(version, if (percent >= 0) "安装包下载中 · $percent%" else "安装包下载中", percent, true))
+                        }
+                    }
+                    output.fd.sync()
                 }
             }
+            check(!stopped) { "下载已中断" }
+            check(partial.length() > 0L && (total <= 0L || partial.length() == total)) { "安装包下载不完整" }
+            val info = packageManager.getPackageArchiveInfo(partial.absolutePath, 0) ?: error("安装包校验失败")
+            check(info.packageName == packageName && info.versionName == version) { "安装包版本不匹配" }
+            if (target.exists()) target.delete()
+            check(partial.renameTo(target)) { "无法保存安装包" }
+            getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE).edit()
+                .putString(AppUpdater.KEY_PATH, target.absolutePath)
+                .putString(AppUpdater.KEY_STATUS, AppUpdater.STATUS_COMPLETE).commit()
+            finish(version, true, "新版本 $version 已下载，点击继续安装", null)
+        } catch (e: Exception) {
+            getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE).edit()
+                .putString(AppUpdater.KEY_STATUS, AppUpdater.STATUS_FAILED).commit()
+            finish(version, false, "升级下载失败，点击返回重试", e.message ?: "未知错误")
+        } finally { connection?.disconnect() }
+    }
+
+    private fun notification(version: String, text: String, percent: Int, ongoing: Boolean): Notification {
+        val open = PendingIntent.getActivity(this, 0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID) else Notification.Builder(this)
+        return builder.setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle("HDResourceExtractor $version").setContentText(text).setContentIntent(open)
+            .setOnlyAlertOnce(true).setOngoing(ongoing).setAutoCancel(!ongoing)
+            .apply { if (ongoing) { if (percent >= 0) setProgress(100, percent, false) else setProgress(0, 0, true) } }
             .build()
     }
 
-    private fun finishNotification(text: String) {
-        handler.removeCallbacks(poll)
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(100, false, text))
+    private fun show(value: Notification) = getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, value)
+
+    private fun finish(version: String, success: Boolean, text: String, error: String?) {
+        show(notification(version, text, if (success) 100 else 0, false))
+        sendBroadcast(Intent(ACTION_FINISHED).setPackage(packageName)
+            .putExtra(EXTRA_VERSION, version).putExtra(EXTRA_SUCCESS, success).putExtra(EXTRA_ERROR, error))
         if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_DETACH) else @Suppress("DEPRECATION") stopForeground(false)
         stopSelf()
     }
 
-    override fun onDestroy() {
-        handler.removeCallbacksAndMessages(null)
-        super.onDestroy()
-    }
-
+    override fun onDestroy() { stopped = true; super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        const val ACTION_FINISHED = "com.combustible12.hdresourceextractor.UPDATE_FINISHED"
+        const val EXTRA_VERSION = "version"
+        const val EXTRA_SUCCESS = "success"
+        const val EXTRA_ERROR = "error"
+        private const val EXTRA_URL = "url"
         private const val CHANNEL_ID = "app_updates"
         private const val NOTIFICATION_ID = 310
-        private const val EXTRA_ID = "download_id"
-        private const val EXTRA_VERSION = "version"
 
-        fun start(context: Context, id: Long, version: String) {
-            val intent = Intent(context, UpdateDownloadService::class.java)
-                .putExtra(EXTRA_ID, id)
-                .putExtra(EXTRA_VERSION, version)
+        fun start(context: Context, url: String, version: String) {
+            val intent = Intent(context, UpdateDownloadService::class.java).putExtra(EXTRA_URL, url).putExtra(EXTRA_VERSION, version)
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
         }
     }
