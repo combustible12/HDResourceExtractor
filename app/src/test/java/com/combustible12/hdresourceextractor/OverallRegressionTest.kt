@@ -75,9 +75,12 @@ class OverallRegressionTest {
         prefs.edit().clear().commit()
         val store = DownloadTaskStore(app)
         val task = store.add("https://cdn.test/original.jpg", "FILE", name = "original.jpg")
+        val cached = File(DownloadCache.dir(app, task.url), "partial").apply { writeText("keep") }
         prefs.edit().putString("tasks", "broken-json").commit()
         assertEquals(task, store.get(task.id))
         assertEquals("broken-json", prefs.getString("tasks_corrupt_backup", ""))
+        DownloadCache.clean(app, emptySet())
+        assertEquals("keep", cached.readText())
     }
     @Test fun cancellationStopsLargeSegmentConcatenationBeforeTheNextChunk() {
         val control = SegmentTaskQueue.Control()

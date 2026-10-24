@@ -18,7 +18,7 @@ class DownloadTaskStore(context: Context) {
             val backup = prefs.getString("tasks_last_good", "[]") ?: "[]"
             val restored = runCatching { JSONArray(backup) }.getOrElse { JSONArray() }
             // Preserve the unreadable original rather than throwing on every startup/task refresh.
-            prefs.edit().putString("tasks_corrupt_backup", raw).putString("tasks", restored.toString()).commit()
+            prefs.edit().putString("tasks_corrupt_backup", raw).putBoolean("preserve_recovery_cache", true).putString("tasks", restored.toString()).commit()
             android.util.Log.w("DownloadTaskStore", "Restored readable task backup", e)
             restored
         }

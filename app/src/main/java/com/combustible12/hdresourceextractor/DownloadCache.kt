@@ -18,6 +18,9 @@ object DownloadCache {
         prefs.edit().remove(key).commit()
     }
     fun clean(context: Context, retained: Set<String>) {
+        // An unreadable task list is not proof that its partial downloads are disposable.
+        if (context.getSharedPreferences("download_task_store", Context.MODE_PRIVATE)
+                .getBoolean("preserve_recovery_cache", false)) return
         File(context.filesDir, "downloads").listFiles()?.filter { it.name !in retained }?.forEach { it.deleteRecursively() }
         val prefs = context.getSharedPreferences("saved_resources", Context.MODE_PRIVATE)
         prefs.all.keys.filter { it.startsWith("pending_") && it.removePrefix("pending_") !in retained }
