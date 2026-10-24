@@ -76,6 +76,28 @@ class TransferRecoveryTest {
         val file = target().apply { writeText("<!DOCTYPE html><html>login</html>") }
         try { MediaSniffer.detect(file, "text/html", "a.jpg"); fail("must reject") } catch (_: IllegalArgumentException) { }
     }
+    @Test fun extensionlessStreamingManifestsAreDetectedFromBytes() {
+        val hls = target().apply { writeText("#EXTM3U\n#EXT-X-ENDLIST") }
+        val dash = target().apply { writeText("<?xml version=\"1.0\"?><MPD></MPD>") }
+        assertEquals(MediaSniffer.Manifest.HLS, MediaSniffer.manifest(hls, "application/octet-stream"))
+        assertEquals(MediaSniffer.Manifest.DASH, MediaSniffer.manifest(dash, "application/xml"))
+    }
+    @Test fun missingPublishedUriIsNotReportedAsSavedOrUsedForDeduplication() {
+        val app = org.robolectric.RuntimeEnvironment.getApplication<android.app.Application>()
+        val url = "https://example.com/deleted.jpg"
+        val key = ResourceIdentity.of(url)
+        app.getSharedPreferences("saved_resources", android.content.Context.MODE_PRIVATE).edit()
+            .putString(key, "content://missing.provider/deleted").commit()
+        assertFalse(MediaPublisher.saved(app, url))
+        assertFalse(app.getSharedPreferences("saved_resources", android.content.Context.MODE_PRIVATE).contains(key))
+
+        val store = DownloadTaskStore(app)
+        val old = store.add(url, "FILE", name = "deleted.jpg")
+        store.update(old.id, "completed", 100, "已保存")
+        val replacement = store.add(url, "FILE", name = "deleted.jpg")
+        assertNotEquals(old.id, replacement.id)
+        assertEquals("queued", replacement.status)
+    }
     @Test fun upgradeVersionComparisonUsesNumbers() {
         assertTrue(AppUpdater.compareVersions("0.15.0", "0.9.9") > 0)
         assertEquals(0, AppUpdater.compareVersions("1.0", "1.0.0"))
