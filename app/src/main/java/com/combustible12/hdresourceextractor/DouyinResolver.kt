@@ -12,7 +12,7 @@ internal object DouyinResolver {
     private const val APP_UA = "com.ss.android.ugc.aweme/310101 (Linux; U; Android 13; zh_CN; Pixel 7; Build/TQ3A.230805.001)"
     private val idPattern = Regex("(?:/video/|/note/|/share/video/|[?&](?:modal_id|aweme_id)=)([0-9]{15,22})")
 
-    data class Result(val id: String, val media: List<String>)
+    data class Result(val id: String, val media: List<String>, val videoAlternates: List<String> = emptyList(), val cover: String? = null)
 
     fun resolve(link: String): Result {
         val target = resolveId(link) ?: error("短链接未返回有效作品 ID")
@@ -38,6 +38,10 @@ internal object DouyinResolver {
             if (rates != null) for (j in 0 until rates.length()) {
                 addAddress(rates.optJSONObject(j)?.optJSONObject("play_addr"))
             }
+            val cover = video?.optJSONObject("origin_cover")?.optJSONArray("url_list")?.optString(0)
+                ?: video?.optJSONObject("cover")?.optJSONArray("url_list")?.optString(0)
+            val videoUrls = urls.toList()
+            urls.clear()
             val images = item.optJSONArray("images")
             if (images != null) for (j in 0 until images.length()) {
                 val image = images.optJSONObject(j) ?: continue
@@ -47,8 +51,10 @@ internal object DouyinResolver {
                     if (value.startsWith("http://") || value.startsWith("https://")) urls.add(value)
                 }
             }
-            if (urls.isEmpty()) error("已找到作品，但没有可下载媒体地址")
-            return Result(target, urls.toList())
+            if (videoUrls.isEmpty() && urls.isEmpty()) error("已找到作品，但没有可下载媒体地址")
+            // One video per work; all bitrate/CDN variants are download fallbacks, not extra cards.
+            return Result(target, (videoUrls.take(1) + urls).distinct(),
+                videoUrls.drop(1), cover?.takeIf { it.startsWith("http") })
         }
         error("接口返回的作品与目标 ID 不一致")
     }
