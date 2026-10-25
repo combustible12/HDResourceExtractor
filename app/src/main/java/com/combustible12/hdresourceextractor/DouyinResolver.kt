@@ -41,7 +41,11 @@ internal object DouyinResolver {
             val images = item.optJSONArray("images")
             if (images != null) for (j in 0 until images.length()) {
                 val image = images.optJSONObject(j) ?: continue
-                addAddress(image)
+                val list = image.optJSONArray("url_list")
+                if (list != null) for (k in 0 until list.length()) {
+                    val value = list.optString(k)
+                    if (value.startsWith("http://") || value.startsWith("https://")) urls.add(value)
+                }
             }
             if (urls.isEmpty()) error("已找到作品，但没有可下载媒体地址")
             return Result(target, urls.toList())
