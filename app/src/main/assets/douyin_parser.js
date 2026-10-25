@@ -20,13 +20,13 @@
     if (Array.isArray(obj.images)) n += 80;
     return n;
   }
-  function findAweme(root) {
+  function findAweme(root, expectedId) {
     var best = null, bestScore = -1, visited = 0;
     var seen = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
     function walk(obj, depth) {
       if (!obj || typeof obj !== 'object' || depth > 13 || visited++ > 18000) return;
       try { if (seen && seen.has(obj)) return; if (seen) seen.add(obj); } catch (_) {}
-      var s = score(obj); if (s > bestScore) { best = obj; bestScore = s; }
+      var s = score(obj); if (expectedId && text(obj.aweme_id || obj.awemeId) !== expectedId) s = -1; if (s > bestScore) { best = obj; bestScore = s; }
       var keys; try { keys = Object.keys(obj); } catch (_) { return; }
       keys.forEach(function (key) { try { walk(obj[key], depth + 1); } catch (_) {} });
     }
@@ -43,7 +43,9 @@
     try { roots.push(global._ROUTER_DATA); } catch (_) {}
     try { roots.push(global.__INITIAL_STATE__); } catch (_) {}
     var aweme = null;
-    roots.some(function (root) { aweme = findAweme(root); return Boolean(aweme); });
+    var match = String(global.location && global.location.href || '').match(/(?:\/video\/|\/note\/|[?&](?:modal_id|aweme_id)=)(\d{15,22})/);
+    var expectedId = match ? match[1] : '';
+    roots.some(function (root) { aweme = findAweme(root, expectedId); return Boolean(aweme); });
     if (!aweme) return { ok: false, type: 'unknown', caption: '', images: [], livePhotos: [], cover: null, originVideoUrl: '', playbackUrls: [] };
     var images = (Array.isArray(aweme.images) ? aweme.images : []).map(image).filter(function (x) { return x.originalUrl; });
     var livePhotos = [];
@@ -64,5 +66,5 @@
     var type = livePhotos.length ? 'live_photo' : (images.length ? 'image' : 'video');
     return { ok: true, noteId: text(aweme.aweme_id), type: type, caption: text(aweme.desc), images: type === 'video' ? [] : images, livePhotos: livePhotos, cover: cover, originVideoUrl: type === 'video' ? play : '', playbackUrls: play ? [play] : [] };
   }
-  global.HDDouyinParser = { version: '1.0.0', extract: extract };
+  global.HDDouyinParser = { version: '1.1.0', extract: extract };
 })(window);
