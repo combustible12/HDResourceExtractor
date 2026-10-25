@@ -806,6 +806,28 @@ class MainActivity : AppCompatActivity() {
             "正在打开网页…"
         }
 
+        if (isDouyinSession) {
+            statusText.text = "正在直接解析抖音作品…"
+            val generation = pageGeneration
+            Thread {
+                val outcome = runCatching { DouyinResolver.resolve(url) }
+                runOnUiThread {
+                    if (isDestroyed || generation != pageGeneration) return@runOnUiThread
+                    outcome.onSuccess { result ->
+                        synchronized(structuredMedia) {
+                            structuredMedia.clear()
+                            structuredMedia.addAll(result.media)
+                        }
+                        finalizeXhsResults(allowFallback = false)
+                        statusText.text = "已解析作品 ${result.id}，找到 ${result.media.size} 个媒体地址"
+                    }.onFailure { failure ->
+                        statusText.text = "直接解析未成功：${failure.message}；尝试网页解析…"
+                        webView.loadUrl(url)
+                    }
+                }
+            }.start()
+            return
+        }
         webView.stopLoading()
         webView.loadUrl(url)
     }
