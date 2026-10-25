@@ -55,6 +55,8 @@ class MainActivity : AppCompatActivity() {
     private val visibleResources = mutableListOf<String>()
     private val xhsCandidates = linkedMapOf<String, String>()
     private val xhsCandidateScores = mutableMapOf<String, Int>()
+    private val douyinAlternates = mutableMapOf<String, List<String>>()
+    private val douyinCovers = mutableMapOf<String, String>()
     private val structuredMedia = linkedSetOf<String>()
     private val structuredOtherImages = linkedSetOf<String>()
     private val handler = Handler(Looper.getMainLooper())
@@ -573,7 +575,13 @@ class MainActivity : AppCompatActivity() {
             contentDescription = "资源 ${index + 1}"
         }
 
-        if (isLikelyVideoUrl(url)) {
+        if (isDouyinSession && douyinCovers[url] != null) {
+            imageView.load(douyinCovers[url]) {
+                addHeader("User-Agent", webView.settings.userAgentString.orEmpty())
+                placeholder(ColorDrawable(Color.rgb(235, 237, 240)))
+                error(ColorDrawable(Color.rgb(224, 227, 231)))
+            }
+        } else if (isLikelyVideoUrl(url)) {
             imageView.setImageDrawable(ColorDrawable(Color.rgb(45, 48, 54)))
         } else {
             imageView.load(url) {
@@ -795,6 +803,8 @@ class MainActivity : AppCompatActivity() {
             xhsCandidateScores.clear()
             imageFallbacks.clear()
         }
+        douyinAlternates.clear()
+        douyinCovers.clear()
         synchronized(structuredMedia) { structuredMedia.clear() }
         synchronized(structuredOtherImages) { structuredOtherImages.clear() }
         visibleResources.clear()
@@ -818,8 +828,16 @@ class MainActivity : AppCompatActivity() {
                             structuredMedia.clear()
                             structuredMedia.addAll(result.media)
                         }
+                        douyinAlternates.clear()
+                        douyinCovers.clear()
+                        if (result.videoAlternates.isNotEmpty() && result.media.isNotEmpty()) {
+                            douyinAlternates[result.media.first()] = result.videoAlternates
+                        }
+                        if (result.cover != null && result.media.isNotEmpty()) {
+                            douyinCovers[result.media.first()] = result.cover
+                        }
                         finalizeXhsResults(allowFallback = false)
-                        statusText.text = "已解析作品 ${result.id}，找到 ${result.media.size} 个媒体地址"
+                        statusText.text = "已解析作品 ${result.id}，找到 ${result.media.size} 个媒体资源"
                     }.onFailure { failure ->
                         statusText.text = "直接解析未成功：${failure.message}；尝试网页解析…"
                         webView.loadUrl(url)
@@ -1453,6 +1471,12 @@ class MainActivity : AppCompatActivity() {
                         if (candidate != url) fallbacks.put(org.json.JSONObject().put("url", candidate)
                             .put("cookie", CookieManager.getInstance().getCookie(candidate).orEmpty()))
                     } }
+                    if (isDouyinSession) {
+                        douyinAlternates[url].orEmpty().forEach { candidate ->
+                            if (candidate != url) fallbacks.put(org.json.JSONObject().put("url", candidate)
+                                .put("cookie", CookieManager.getInstance().getCookie(candidate).orEmpty()))
+                        }
+                    }
                     val task = taskStore.add(url, kind, sources = fallbacks.toString(), agent = webView.settings.userAgentString.orEmpty(),
                         referer = webView.url?.takeIf { it.startsWith("http") } ?: currentPageUrl,
                         cookie = CookieManager.getInstance().getCookie(url).orEmpty(), name = name)
