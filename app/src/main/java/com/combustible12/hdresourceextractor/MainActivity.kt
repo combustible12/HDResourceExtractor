@@ -853,7 +853,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun observeResource(url: String) {
-        collectGenericResource(url, showImmediately = !isXhsSession)
+        if (!isDouyinSession) collectGenericResource(url, showImmediately = !isXhsSession)
         if (isXhsSession) {
             collectXhsCandidate(url, 0, 0, "network")
         }
@@ -1116,7 +1116,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        if (allowFallback && !xhsFallbackShown) {
+        if (allowFallback && !xhsFallbackShown && !isDouyinSession) {
             xhsFallbackShown = true
             runOnUiThread {
                 statusText.text = "未读取到正文图片，已切换通用资源扫描"
@@ -1276,7 +1276,7 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun add(url: String) {
-            collectGenericResource(url, showImmediately = !isXhsSession || xhsFallbackShown)
+            if (!isDouyinSession) collectGenericResource(url, showImmediately = !isXhsSession || xhsFallbackShown)
         }
 
         @JavascriptInterface
