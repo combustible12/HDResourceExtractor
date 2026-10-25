@@ -833,7 +833,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun scanCurrentPage() {
-        if (isXhsSession || isDouyinSession) {
+        if (isDouyinSession) {
+            // Douyin uses its own resolver; never route a Douyin retry through XHS scanning.
+            openAndExtract()
+            return
+        }
+        if (isXhsSession) {
+            // Preserve the existing XHS scanning and fallback sequence.
             statusText.text = "正在重新识别媒体资源…"
             scanXhsNoteResources(silent = true)
             scanStructuredNote()
