@@ -59,6 +59,8 @@ class MainActivity : AppCompatActivity() {
     private val douyinCovers = mutableMapOf<String, String>()
     private val structuredMedia = linkedSetOf<String>()
     private val structuredOtherImages = linkedSetOf<String>()
+    private val instagramMedia = linkedMapOf<String, String>()
+    private val instagramMediaScores = mutableMapOf<String, Int>()
     private val handler = Handler(Looper.getMainLooper())
 
     private var pendingSharedText: String = ""
@@ -67,6 +69,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var pageGeneration = 0L
     private var isXhsSession: Boolean = false
     private var isDouyinSession: Boolean = false
+    private var isInstagramSession: Boolean = false
     private var xhsFallbackShown: Boolean = false
     private var pendingUpdateCheck: Boolean = false
     private val appUpdater by lazy { AppUpdater(this) }
@@ -425,13 +428,23 @@ class MainActivity : AppCompatActivity() {
         val tasksButton = makeBottomActionButton("下载任务管理").apply {
             setOnClickListener { showDownloadTasks() }
         }
-        foreground.addView(tasksButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)).apply { topMargin = dp(8) })
-
-        foreground.addView(
+        val bottomActions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        bottomActions.addView(
+            tasksButton,
+            LinearLayout.LayoutParams(0, dp(42), 1f).apply { rightMargin = dp(5) }
+        )
+        bottomActions.addView(
             updateButton,
+            LinearLayout.LayoutParams(0, dp(42), 1f).apply { leftMargin = dp(5) }
+        )
+        foreground.addView(
+            bottomActions,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)).apply {
                 topMargin = dp(8)
-                bottomMargin = dp(42)
+                bottomMargin = dp(14)
             }
         )
 
@@ -495,12 +508,13 @@ class MainActivity : AppCompatActivity() {
 
         resultTitle.text = when {
             snapshot.isEmpty() -> "提取结果"
+            isInstagramSession -> "帖子媒体（${snapshot.size}）"
             isXhsSession && !xhsFallbackShown -> "正文媒体（${snapshot.size}）"
             else -> "检测到的资源（${snapshot.size}）"
         }
 
         saveAllButton.visibility = if (snapshot.isEmpty()) View.GONE else View.VISIBLE
-        saveAllButton.text = if (isXhsSession && !xhsFallbackShown) {
+        saveAllButton.text = if (isInstagramSession || isXhsSession && !xhsFallbackShown) {
             "保存全部媒体"
         } else {
             "保存全部资源"
@@ -707,7 +721,18 @@ class MainActivity : AppCompatActivity() {
                     currentPageUrl = url
                 }
 
-                if (isXhsSession || isDouyinSession) {
+                if (isInstagramSession) {
+                    statusText.text = "正在识别 Instagram 帖子媒体…"
+                    scanStructuredNote()
+                    scanInstagramPostResources()
+                    (1..10).forEach { step ->
+                        postScanDelayed({
+                            scanInstagramPostResources(advanceCarousel = true)
+                            scanStructuredNote()
+                        }, step * 700L)
+                    }
+                    postScanDelayed({ finalizeInstagramResults() }, 8000)
+                } else if (isXhsSession || isDouyinSession) {
                     statusText.text = "正在识别正文媒体资源…"
                     scanXhsNoteResources(silent = true)
                     scanStructuredNote()
@@ -795,6 +820,7 @@ class MainActivity : AppCompatActivity() {
         submittedUrl = url
         isXhsSession = isXhsUrl(url)
         isDouyinSession = url.contains("douyin.com", true) || url.contains("iesdouyin.com", true)
+        isInstagramSession = isInstagramUrl(url)
         xhsFallbackShown = false
 
         synchronized(resources) { resources.clear() }
@@ -807,13 +833,17 @@ class MainActivity : AppCompatActivity() {
         douyinCovers.clear()
         synchronized(structuredMedia) { structuredMedia.clear() }
         synchronized(structuredOtherImages) { structuredOtherImages.clear() }
+        synchronized(instagramMedia) {
+            instagramMedia.clear()
+            instagramMediaScores.clear()
+        }
         visibleResources.clear()
         renderResults()
 
-        statusText.text = if (isXhsSession) {
-            "正在打开小红书笔记…"
-        } else {
-            "正在打开网页…"
+        statusText.text = when {
+            isXhsSession -> "正在打开小红书笔记…"
+            isInstagramSession -> "正在打开 Instagram 帖子…"
+            else -> "正在打开网页…"
         }
 
         if (isDouyinSession) {
@@ -862,6 +892,11 @@ class MainActivity : AppCompatActivity() {
             scanXhsNoteResources(silent = true)
             scanStructuredNote()
             postScanDelayed({ finalizeXhsResults(allowFallback = true) }, 900)
+        } else if (isInstagramSession) {
+            statusText.text = "正在重新识别 Instagram 帖子媒体…"
+            scanStructuredNote()
+            scanInstagramPostResources(advanceCarousel = true)
+            postScanDelayed({ finalizeInstagramResults() }, 900)
         } else {
             scanDomResources()
         }
@@ -898,8 +933,17 @@ class MainActivity : AppCompatActivity() {
             lower.contains("xhscdn.com")
     }
 
+    private fun isInstagramUrl(url: String): Boolean {
+        val lower = url.lowercase(Locale.US)
+        return lower.contains("instagram.com/p/") ||
+            lower.contains("instagram.com/reel/") ||
+            lower.contains("instagram.com/tv/")
+    }
+
     private fun observeResource(url: String) {
-        if (!isDouyinSession) collectGenericResource(url, showImmediately = !isXhsSession)
+        if (!isDouyinSession && !isInstagramSession) {
+            collectGenericResource(url, showImmediately = !isXhsSession)
+        }
         if (isXhsSession) {
             collectXhsCandidate(url, 0, 0, "network")
         }
@@ -913,14 +957,45 @@ class MainActivity : AppCompatActivity() {
         assets.open("xhs_parser.js").bufferedReader(Charsets.UTF_8).use { it.readText() }
     }
 
+    private val sharedInstagramParser by lazy {
+        assets.open("instagram_parser.js").bufferedReader(Charsets.UTF_8).use { it.readText() }
+    }
+
     private fun scanStructuredNote() {
-        if (!isXhsSession && !isDouyinSession) return
+        if (!isXhsSession && !isDouyinSession && !isInstagramSession) return
         val script = if (isDouyinSession) {
             sharedDouyinParser + "\n;try{HDExtractor.structured(JSON.stringify(window.HDDouyinParser.extract()));}catch(e){}"
+        } else if (isInstagramSession) {
+            sharedInstagramParser + "\n;try{HDExtractor.structured(JSON.stringify(window.HDInstagramParser.extract()));}catch(e){}"
         } else {
             sharedXhsParser + "\n;try{HDExtractor.structured(JSON.stringify(window.HDXhsParser.extract()));}catch(e){}"
         }
         webView.evaluateJavascript(script, null)
+    }
+
+    private fun scanInstagramPostResources(advanceCarousel: Boolean = false) {
+        if (!isInstagramSession || webView.url.isNullOrBlank()) return
+        val script = """
+            (function() {
+              try {
+                HDExtractor.structured(JSON.stringify(window.HDInstagramParser.extract()));
+                if (!${if (advanceCarousel) "true" else "false"}) return;
+                const article = document.querySelector('article');
+                if (!article) return;
+                const candidates = article.querySelectorAll(
+                  'button[aria-label], div[role="button"][aria-label]'
+                );
+                for (const button of candidates) {
+                  const label = String(button.getAttribute('aria-label') || '').trim().toLowerCase();
+                  if (label === 'next' || label === '下一步' || label === '下一个') {
+                    button.click();
+                    break;
+                  }
+                }
+              } catch(e) {}
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(sharedInstagramParser + "\n" + script, null)
     }
 
     private fun scanXhsNoteResources(silent: Boolean = false) {
@@ -1281,6 +1356,21 @@ class MainActivity : AppCompatActivity() {
     private fun addStructuredImages(json: String) {
         try {
             val result = org.json.JSONObject(json)
+            if (isInstagramSession) {
+                val items = result.optJSONArray("items")
+                if (items != null) {
+                    for (i in 0 until items.length()) {
+                        val item = items.optJSONObject(i) ?: continue
+                        collectInstagramMedia(
+                            item.optString("url"),
+                            item.optInt("width"),
+                            item.optInt("height")
+                        )
+                    }
+                }
+                handler.post { finalizeInstagramResults() }
+                return
+            }
             val images = result.optJSONArray("images")
             if (images != null) {
                 for (i in 0 until images.length()) {
@@ -1314,6 +1404,45 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {}
     }
 
+    private fun collectInstagramMedia(url: String, width: Int, height: Int) {
+        if (!url.startsWith("https://")) return
+        val lower = url.lowercase(Locale.US)
+        if (
+            !lower.contains("cdninstagram.com") &&
+            !lower.contains("fbcdn.net") &&
+            !lower.contains("instagram.com")
+        ) return
+        val key = try {
+            val uri = Uri.parse(url)
+            uri.host.orEmpty().lowercase(Locale.US) + uri.path.orEmpty()
+        } catch (_: Exception) {
+            url.substringBefore('?').substringBefore('#')
+        }
+        if (key.isBlank()) return
+        val score = (width.toLong() * height.toLong()).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        synchronized(instagramMedia) {
+            val oldScore = instagramMediaScores[key] ?: Int.MIN_VALUE
+            if (score > oldScore) {
+                instagramMedia[key] = url
+                instagramMediaScores[key] = score
+            }
+        }
+    }
+
+    private fun finalizeInstagramResults() {
+        val snapshot = synchronized(instagramMedia) { instagramMedia.values.toList() }
+        runOnUiThread {
+            visibleResources.clear()
+            visibleResources.addAll(snapshot)
+            renderResults()
+            statusText.text = if (snapshot.isEmpty()) {
+                "未读取到帖子媒体，请确认帖子已正常显示后点“重新扫描”"
+            } else {
+                "已识别 ${snapshot.size} 个 Instagram 帖子媒体"
+            }
+        }
+    }
+
     private inner class ResourceBridge {
         @JavascriptInterface
         fun structured(json: String) {
@@ -1322,12 +1451,14 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun add(url: String) {
-            if (!isDouyinSession) collectGenericResource(url, showImmediately = !isXhsSession || xhsFallbackShown)
+            if (!isDouyinSession && !isInstagramSession) {
+                collectGenericResource(url, showImmediately = !isXhsSession || xhsFallbackShown)
+            }
         }
 
         @JavascriptInterface
         fun done(count: Int) {
-            if (isXhsSession && !xhsFallbackShown) return
+            if (isInstagramSession || isXhsSession && !xhsFallbackShown) return
             runOnUiThread {
                 statusText.text = if (visibleResources.isEmpty()) {
                     "暂未发现资源，可稍后点“重新扫描”"

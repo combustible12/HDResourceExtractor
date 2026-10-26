@@ -9,6 +9,18 @@ function runParser(file, globalName, stateName, state) {
   return window[globalName].extract();
 }
 
+function runInstagramDomParser(elements) {
+  const article = { querySelectorAll: () => elements };
+  const window = {};
+  const document = {
+    querySelector: selector => selector === 'article' ? article : null,
+    querySelectorAll: () => []
+  };
+  const context = vm.createContext({ window, URL, location: { pathname: '/p/DOM123/', href: 'https://www.instagram.com/p/DOM123/' }, document });
+  vm.runInContext(fs.readFileSync('app/src/main/assets/instagram_parser.js', 'utf8'), context);
+  return window.HDInstagramParser.extract();
+}
+
 const xhs = runParser('app/src/main/assets/xhs_parser.js', 'HDXhsParser', '__INITIAL_STATE__', {
   note: { noteDetailMap: { '0123456789abcdef01234567': { note: {
     noteId: '0123456789abcdef01234567', title: 'live', desc: 'caption',
@@ -42,5 +54,40 @@ const douyinVideo = runParser('app/src/main/assets/douyin_parser.js', 'HDDouyinP
 assert.equal(douyinVideo.type, 'video');
 assert.equal(douyinVideo.originVideoUrl, 'https://v.douyin.com/play?id=1');
 assert.equal(douyinVideo.cover.originalUrl, 'https://p.douyinpic.com/c.jpg');
+
+const instagram = runParser('app/src/main/assets/instagram_parser.js', 'HDInstagramParser', '_sharedData', {
+  entry_data: { PostPage: [{ graphql: { shortcode_media: {
+    shortcode: 'ABC123',
+    edge_sidecar_to_children: { edges: [
+      { node: {
+        __typename: 'GraphImage', original_width: 1440, original_height: 1800,
+        display_url: 'https://scontent.cdninstagram.com/photo-a.jpg?size=large',
+        display_resources: [
+          { src: 'https://scontent.cdninstagram.com/photo-a.jpg?size=small', config_width: 640, config_height: 800 },
+          { src: 'https://scontent.cdninstagram.com/photo-a.jpg?size=large', config_width: 1440, config_height: 1800 }
+        ]
+      } },
+      { node: {
+        __typename: 'GraphVideo', is_video: true, original_width: 1080, original_height: 1920,
+        video_url: 'https://scontent.cdninstagram.com/video-b.mp4?token=1'
+      } }
+    ] }
+  } } }] }
+});
+assert.equal(instagram.platform, 'instagram');
+assert.equal(instagram.source, 'structured');
+assert.deepEqual(instagram.items.map(item => item.type), ['image', 'video']);
+assert.equal(instagram.items[0].url, 'https://scontent.cdninstagram.com/photo-a.jpg?size=large');
+assert.equal(instagram.items[1].url, 'https://scontent.cdninstagram.com/video-b.mp4?token=1');
+
+const instagramDom = runInstagramDomParser([
+  { tagName: 'IMG', naturalWidth: 48, naturalHeight: 48, currentSrc: 'https://scontent.cdninstagram.com/avatar.jpg' },
+  { tagName: 'IMG', naturalWidth: 1080, naturalHeight: 1350, currentSrc: 'https://scontent.cdninstagram.com/post.jpg?x=1' },
+  { tagName: 'IMG', naturalWidth: 1080, naturalHeight: 1350, currentSrc: 'https://scontent.cdninstagram.com/post.jpg?x=2' },
+  { tagName: 'IMG', naturalWidth: 1200, naturalHeight: 800, currentSrc: 'https://unrelated.example.com/ad.jpg' }
+]);
+assert.equal(instagramDom.source, 'dom');
+assert.equal(instagramDom.items.length, 1);
+assert.equal(instagramDom.items[0].url, 'https://scontent.cdninstagram.com/post.jpg?x=1');
 
 console.log('platform parser regression: PASS');
